@@ -6,66 +6,69 @@ import net.minecraft.client.input.Input;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.Heightmap;
 import org.lwjgl.glfw.GLFW;
-import org.lwjgl.glfw.GLFWScrollCallback;
 import org.lwjgl.glfw.GLFWScrollCallbackI;
 
 /**
- * State 3: a proper RTS camera.
+ * State 3: an RTS camera.
  * <p>
- * Not a freecam. The camera orbits a <em>focus point</em> on the ground at a fixed isometric
- * pitch: WASD and middle-drag pan that focus across the XZ plane, the wheel zooms, and Z/C rotate
- * yaw in steps. The camera angle never follows the mouse, which leaves the pointer free.
+ * Controls, deliberately matching what RTS games do:
+ * <ul>
+ *   <li><b>Right-drag</b> or <b>WASD</b> - pan the map</li>
+ *   <li><b>Middle-drag</b> - look around (yaw and pitch)</li>
+ *   <li><b>Wheel</b> - zoom, and the <i>only</i> thing that changes camera height</li>
+ * </ul>
+ * The focus point's height is fixed when the mode is entered and never tracks terrain: panning
+ * over a hill must not lift the camera.
  * <p>
  * ponytail: no mixins. Movement is suppressed by swapping {@code player.input} for a plain
- * {@link Input} (whose {@code tick()} never reads the keyboard); zeroing the field fails because
- * KeyboardInput rewrites it every tick. Scroll is captured by chaining GLFW's scroll callback and
- * forwarding to the previous one when inactive, so the hotbar still works normally.
+ * {@link Input} (whose {@code tick()} never reads the keyboard); scroll is captured by chaining
+ * GLFW's callback and forwarding to the previous one when inactive.
  */
 public final class RtsCameraMode {
 
     private static final double PAN_SPEED = 0.75;
     private static final double SPRINT_MULTIPLIER = 2.5;
-    private static final double DRAG_PAN_SCALE = 0.06;
+    private static final double DRAG_PAN_SCALE = 0.045;
+    private static final double LOOK_SENSITIVITY = 0.22;
 
     private static final double MIN_DISTANCE = 8.0;
     private static final double MAX_DISTANCE = 90.0;
     private static final double DEFAULT_DISTANCE = 34.0;
     private static final double ZOOM_STEP = 3.0;
 
-    /** True isometric pitch - equal foreshortening on all three axes. */
-    private static final float ISO_PITCH = 35.264f;
-    private static final float YAW_STEP = 45.0f;
-    private static final int ROTATE_COOLDOWN_TICKS = 6;
+    private static final float DEFAULT_PITCH = 35.264f;   // true isometric
+    private static final float MIN_PITCH = 15.0f;
+    private static final float MAX_PITCH = 80.0f;
+
+    /** Below this much right-drag, treat the release as a click (a move order), not a pan. */
+    private static final double CLICK_SLOP = 3.0;
+
+    /** Input sets the target*; rendered values ease toward them so nothing snaps. */
+    private static final double EASE = 0.4;
 
     private boolean active;
     private ArmorStandEntity camera;
     private Input savedInput;
-
-    /**
-     * Input drives the {@code target*} values; the rendered values ease toward them each tick.
-     * Without this the camera snaps, which is what makes a tick-rate camera feel cheap.
-     */
-    private static final double EASE = 0.35;
 
     private double focusX;
     private double focusY;
     private double focusZ;
     private double distance = DEFAULT_DISTANCE;
     private float yaw = 45.0f;
+    private float pitch = DEFAULT_PITCH;
 
     private double targetFocusX;
-    private double targetFocusY;
     private double targetFocusZ;
     private double targetDistance = DEFAULT_DISTANCE;
     private float targetYaw = 45.0f;
+    private float targetPitch = DEFAULT_PITCH;
 
-    private int rotateCooldown;
+    private boolean rightWasDown;
     private boolean middleWasDown;
+    private double rightDragDistance;
     private double lastMouseX;
     private double lastMouseY;
 
@@ -76,7 +79,11 @@ public final class RtsCameraMode {
         return active;
     }
 
-    /** Chain into GLFW's scroll callback once, at client init. */
+    /** True if the last right-button press moved far enough to be a pan rather than a click. */
+    public boolean consumedRightDrag() {
+        return rightDragDistance > CLICK_SLOP;
+    }
+
     public void hookScroll(MinecraftClient client) {
         if (scrollHooked) {
             return;
@@ -87,7 +94,7 @@ public final class RtsCameraMode {
                 if (active) {
                     targetDistance = MathHelper.clamp(
                             targetDistance - dy * ZOOM_STEP, MIN_DISTANCE, MAX_DISTANCE);
-                    return;                                  // swallow: don't scroll the hotbar
+                    return;                              // swallow: don't scroll the hotbar
                 }
                 if (previousScrollCallback != null) {
                     previousScrollCallback.invoke(win, dx, dy);
@@ -107,9 +114,11 @@ public final class RtsCameraMode {
             Vec3d p = client.player.getEntityPos();
             targetFocusX = focusX = p.x;
             targetFocusZ = focusZ = p.z;
-            targetFocusY = focusY = groundAt(client, focusX, focusZ);
+            focusY = p.y;                                // fixed for the session; wheel changes height
             targetDistance = distance = DEFAULT_DISTANCE;
             targetYaw = yaw;
+            targetPitch = pitch = DEFAULT_PITCH;
+            rightDragDistance = 0.0;
 
             camera = new ArmorStandEntity(EntityType.ARMOR_STAND, client.world);
             camera.setInvisible(true);
@@ -117,13 +126,18 @@ public final class RtsCameraMode {
             camera.setInvulnerable(true);
             client.world.addEntity(camera);
             applyCameraTransform();
+            camera.setLastPositionAndAngles(camera.getEntityPos(), camera.getYaw(), camera.getPitch());
             client.setCameraEntity(camera);
 
             savedInput = client.player.input;
-            client.player.input = new Input();       // inert: never reads the keyboard
+            client.player.input = new Input();           // inert: never reads the keyboard
+
+            // An RTS needs a pointer. Releasing the grab also stops mouse motion turning
+            // the player, which is what made this feel like a shooter.
+            client.mouse.unlockCursor();
 
             active = true;
-            say(client, "RTS camera - WASD/drag pan, wheel zoom, Z/C rotate");
+            say(client, "RTS camera - right-drag/WASD pan, middle-drag look, wheel zoom");
         } catch (Exception e) {
             IsoRts.LOG.error("failed to enter RTS camera mode", e);
             disable(client);
@@ -141,11 +155,13 @@ public final class RtsCameraMode {
             if (camera != null) {
                 camera.discard();
             }
+            client.mouse.lockCursor();
         } catch (Exception e) {
             IsoRts.LOG.error("failed to leave RTS camera mode cleanly", e);
         } finally {
             camera = null;
             savedInput = null;
+            rightWasDown = false;
             middleWasDown = false;
             active = false;
         }
@@ -160,38 +176,45 @@ public final class RtsCameraMode {
             return;
         }
 
-        handleRotate(client);
-        handlePan(client);
+        // Clicking in the world makes Minecraft re-grab the pointer; take it back each tick.
+        if (client.currentScreen == null && client.mouse.isCursorLocked()) {
+            client.mouse.unlockCursor();
+        }
 
-        // Ease the rendered values toward the input targets.
+        long window = client.getWindow().getHandle();
+        double mx = client.mouse.getX();
+        double my = client.mouse.getY();
+        double dmx = mx - lastMouseX;
+        double dmy = my - lastMouseY;
+        lastMouseX = mx;
+        lastMouseY = my;
+
+        handleLook(window, dmx, dmy);
+        handlePan(client, window, dmx, dmy);
+
         focusX = MathHelper.lerp(EASE, focusX, targetFocusX);
-        focusY = MathHelper.lerp(EASE, focusY, targetFocusY);
         focusZ = MathHelper.lerp(EASE, focusZ, targetFocusZ);
         distance = MathHelper.lerp(EASE, distance, targetDistance);
         yaw += (float) (MathHelper.wrapDegrees(targetYaw - yaw) * EASE);
+        pitch += (float) ((targetPitch - pitch) * EASE);
 
         applyCameraTransform();
     }
 
-    private void handleRotate(MinecraftClient client) {
-        if (rotateCooldown > 0) {
-            rotateCooldown--;
-            return;
+    /** Middle-drag looks around. */
+    private void handleLook(long window, double dmx, double dmy) {
+        boolean down = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_MIDDLE) == GLFW.GLFW_PRESS;
+        if (down && middleWasDown) {
+            targetYaw = MathHelper.wrapDegrees(targetYaw + (float) (dmx * LOOK_SENSITIVITY));
+            targetPitch = MathHelper.clamp(
+                    targetPitch + (float) (dmy * LOOK_SENSITIVITY), MIN_PITCH, MAX_PITCH);
         }
-        long window = client.getWindow().getHandle();
-        boolean ccw = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_Z) == GLFW.GLFW_PRESS;
-        boolean cw = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
-        if (ccw ^ cw) {
-            targetYaw = MathHelper.wrapDegrees(targetYaw + (cw ? YAW_STEP : -YAW_STEP));
-            rotateCooldown = ROTATE_COOLDOWN_TICKS;
-        }
+        middleWasDown = down;
     }
 
-    private void handlePan(MinecraftClient client) {
-        double speed = PAN_SPEED * (client.options.sprintKey.isPressed() ? SPRINT_MULTIPLIER : 1.0);
-        // Zoomed out, the same screen distance covers more ground - scale panning with it.
-        speed *= distance / DEFAULT_DISTANCE;
-
+    /** Right-drag and WASD pan the map. Neither touches height. */
+    private void handlePan(MinecraftClient client, long window, double dmx, double dmy) {
+        double zoomScale = distance / DEFAULT_DISTANCE;
         float yawRad = yaw * MathHelper.RADIANS_PER_DEGREE;
         double fx = -MathHelper.sin(yawRad);
         double fz = MathHelper.cos(yawRad);
@@ -205,41 +228,35 @@ public final class RtsCameraMode {
 
         double len = Math.sqrt(dx * dx + dz * dz);
         if (len > 1.0e-4) {
+            double speed = PAN_SPEED * zoomScale
+                    * (client.options.sprintKey.isPressed() ? SPRINT_MULTIPLIER : 1.0);
             targetFocusX += dx / len * speed;
             targetFocusZ += dz / len * speed;
         }
 
-        // Middle-drag pans, matching how most RTS games grab the map.
-        long window = client.getWindow().getHandle();
-        boolean down = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_MIDDLE) == GLFW.GLFW_PRESS;
-        double mx = client.mouse.getX();
-        double my = client.mouse.getY();
+        boolean down = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
         if (down) {
-            if (middleWasDown) {
-                double ddx = (mx - lastMouseX) * DRAG_PAN_SCALE * (distance / DEFAULT_DISTANCE);
-                double ddy = (my - lastMouseY) * DRAG_PAN_SCALE * (distance / DEFAULT_DISTANCE);
-                targetFocusX += -fx * ddy - fz * ddx;
-                targetFocusZ += -fz * ddy + fx * ddx;
+            if (rightWasDown) {
+                rightDragDistance += Math.abs(dmx) + Math.abs(dmy);
+                double px = dmx * DRAG_PAN_SCALE * zoomScale;
+                double pz = dmy * DRAG_PAN_SCALE * zoomScale;
+                // Drag the map with the cursor: opposite to pointer motion.
+                targetFocusX += -fx * pz - fz * px;
+                targetFocusZ += -fz * pz + fx * px;
+            } else {
+                rightDragDistance = 0.0;
             }
-            middleWasDown = true;
-        } else {
-            middleWasDown = false;
         }
-        lastMouseX = mx;
-        lastMouseY = my;
-
-        // Target the terrain height under the focus; the ease in tick() keeps it from popping
-        // as you pan across cliffs.
-        targetFocusY = groundAt(client, targetFocusX, targetFocusZ);
+        rightWasDown = down;
     }
 
-    /** Place the camera on a fixed isometric orbit around the focus point. */
+    /** Orbit the fixed-height focus point. Height comes from distance and pitch only. */
     private void applyCameraTransform() {
         if (camera == null) {
             return;
         }
         float yawRad = yaw * MathHelper.RADIANS_PER_DEGREE;
-        float pitchRad = ISO_PITCH * MathHelper.RADIANS_PER_DEGREE;
+        float pitchRad = pitch * MathHelper.RADIANS_PER_DEGREE;
 
         double horizontal = distance * MathHelper.cos(pitchRad);
         double vertical = distance * MathHelper.sin(pitchRad);
@@ -248,22 +265,12 @@ public final class RtsCameraMode {
         double cz = focusZ - MathHelper.cos(yawRad) * horizontal;
         double cy = focusY + vertical;
 
-        // Record where the camera WAS, then move it. Minecraft renders the camera interpolated
-        // between last* and current using the frame's tick delta, so overwriting last* with the
-        // new position (as this did originally) destroys interpolation and the camera moves in 20
-        // visible steps per second no matter the framerate.
+        // Keep the previous position so Minecraft can interpolate between ticks - overwriting it
+        // pins the camera to 20 visible steps per second whatever the framerate.
         camera.setLastPositionAndAngles(camera.getEntityPos(), camera.getYaw(), camera.getPitch());
         camera.setPosition(cx, cy, cz);
         camera.setYaw(yaw);
-        camera.setPitch(ISO_PITCH);
-    }
-
-    private static double groundAt(MinecraftClient client, double x, double z) {
-        if (client.world == null) {
-            return 64.0;
-        }
-        BlockPos pos = BlockPos.ofFloored(x, 0.0, z);
-        return client.world.getTopY(Heightmap.Type.WORLD_SURFACE, pos.getX(), pos.getZ());
+        camera.setPitch(pitch);
     }
 
     private static void say(MinecraftClient client, String msg) {

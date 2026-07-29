@@ -45,6 +45,9 @@ public class IsoRtsClient implements ClientModInitializer {
     private static final double DRAG_DEADZONE = 1.5;
     private static final int ISO_AUTO_DELAY_TICKS = 40;
 
+    /** Reach for cursor picking - generous, since the RTS camera sits well back. */
+    private static final double PICK_DISTANCE = 256.0;
+
     private State state = State.FIRST_PERSON;
     private Entity selected;
 
@@ -62,6 +65,8 @@ public class IsoRtsClient implements ClientModInitializer {
 
     private boolean middleWasDown;
     private double lastMouseX;
+    private boolean leftWasDown;
+    private boolean rtsRightWasDown;
 
     @Override
     public void onInitializeClient() {
@@ -133,10 +138,16 @@ public class IsoRtsClient implements ClientModInitializer {
         }
     }
 
+    /**
+     * Fire Isocraft's toggle exactly once.
+     * <p>
+     * Deliberately only bumps the press counter that {@code wasPressed()} drains - it does NOT
+     * mark the key held. Holding it (as this did) leaves {@code isPressed()} true for several
+     * ticks, and a poll-based handler then toggles the view on/off/on, which reads as a stutter
+     * during the transition.
+     */
     private void tapIsoToggle() {
-        KeyBinding.setKeyPressed(isoKey, true);
         KeyBinding.onKeyPressed(isoKey);
-        isoToggleRelease = 2;
     }
 
     private void handleIsoAutoToggle(MinecraftClient client) {
@@ -147,13 +158,6 @@ public class IsoRtsClient implements ClientModInitializer {
                 tapIsoToggle();
                 state = State.ISO_PLAYER;
                 IsoRts.LOG.info("auto-enabled isometric view");
-            }
-        }
-        if (isoToggleRelease > 0) {
-            isoToggleRelease--;
-            if (isoToggleRelease == 0) {
-                KeyBinding.setKeyPressed(isoKey, false);
-                isoToggleRelease = -1;
             }
         }
     }
@@ -212,6 +216,11 @@ public class IsoRtsClient implements ClientModInitializer {
      * attached to. Cursor unprojection and drag-box select are the upgrade.
      */
     private void handleSelectionAndOrders(MinecraftClient client) {
+        if (rtsCamera.isActive()) {
+            handleRtsSelection(client);
+            return;
+        }
+
         HitResult hit = client.crosshairTarget;
         if (hit == null) {
             return;
@@ -235,6 +244,47 @@ public class IsoRtsClient implements ClientModInitializer {
                 say(client, "move -> " + target.toShortString());
             }
         }
+    }
+
+    /**
+     * RTS-mode picking: left-click selects whatever unit is under the cursor, right-click orders
+     * it there. Reads raw button edges rather than key bindings, and picks through the cursor
+     * rather than the crosshair - with the pointer free, screen centre means nothing.
+     */
+    private void handleRtsSelection(MinecraftClient client) {
+        long window = client.getWindow().getHandle();
+        boolean left = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) == GLFW.GLFW_PRESS;
+        boolean right = GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_RIGHT) == GLFW.GLFW_PRESS;
+
+        if (left && !leftWasDown) {
+            HitResult hit = CursorPick.pick(client, PICK_DISTANCE);
+            if (hit != null && hit.getType() == HitResult.Type.ENTITY) {
+                Entity entity = ((EntityHitResult) hit).getEntity();
+                if (IsoRts.isUnit(entity)) {
+                    selected = entity;
+                    say(client, "selected unit " + entity.getId());
+                } else {
+                    selected = null;
+                }
+            } else {
+                selected = null;
+                say(client, "nothing selected");
+            }
+        }
+        leftWasDown = left;
+
+        // Order on release, and only if the drag was short enough to be a click not a pan.
+        if (!right && rtsRightWasDown && !rtsCamera.consumedRightDrag()) {
+            if (selected != null && !selected.isRemoved()) {
+                HitResult hit = CursorPick.pick(client, PICK_DISTANCE);
+                if (hit != null && hit.getType() == HitResult.Type.BLOCK) {
+                    BlockPos target = ((BlockHitResult) hit).getBlockPos().up();
+                    ClientPlayNetworking.send(new MoveOrderPayload(selected.getId(), target));
+                    say(client, "move -> " + target.toShortString());
+                }
+            }
+        }
+        rtsRightWasDown = right;
     }
 
     private static void say(MinecraftClient client, String msg) {
