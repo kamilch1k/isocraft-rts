@@ -207,7 +207,9 @@ public final class Structures {
             for (int dz = -searchRadius; dz <= searchRadius; dz += 8) {
                 int x = wantX + dx;
                 int z = wantZ + dz;
-                int centre = groundY(world, x, z);
+                // terrainY, not groundY: on a hand-built map the heightmap is full of rooftops, and
+                // scoring those as "ground" camps an army on top of somebody's castle.
+                int centre = terrainY(world, x, z);
                 if (centre < world.getSeaLevel()) {
                     continue;                       // underwater
                 }
@@ -215,7 +217,7 @@ public final class Structures {
                 // Roughness: how much the surface moves across the footprint.
                 int roughness = 0;
                 for (int[] o : new int[][] {{-10, -10}, {10, -10}, {-10, 10}, {10, 10}, {0, 12}, {12, 0}}) {
-                    roughness += Math.abs(groundY(world, x + o[0], z + o[1]) - centre);
+                    roughness += Math.abs(terrainY(world, x + o[0], z + o[1]) - centre);
                 }
 
                 // Prefer flat, then prefer lower ground so settlements sit in valleys not on peaks.
@@ -226,7 +228,7 @@ public final class Structures {
                 }
             }
         }
-        return best != null ? best : new BlockPos(wantX, groundY(world, wantX, wantZ), wantZ);
+        return best != null ? best : new BlockPos(wantX, terrainY(world, wantX, wantZ), wantZ);
     }
 
     /**

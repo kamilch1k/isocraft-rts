@@ -1,6 +1,7 @@
 package dev.isorts.world;
 
 import dev.isorts.IsoRts;
+import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.BlockPos;
@@ -22,6 +23,23 @@ public final class IslandMap {
     /** Water surface in the ocean preset: floor(-64) + 1 bedrock + 110 stone + 15 water. */
     public static final int SEA_LEVEL = 61;
     private static final int SEA_FLOOR = 46;
+
+    /**
+     * Proof that this world is ours to terraform, buried deep in the stone at the origin.
+     * <p>
+     * Detecting our own map by probing for land where an island should be was a guess, and on an
+     * imported map it guessed wrong: a hand-built kingdom map happened to have ground at the probe
+     * position, so the mod treated it as our island map and started dropping village houses on it.
+     * A block nothing else places is a fact rather than an inference.
+     */
+    public static final BlockPos MARKER_POS = new BlockPos(0, -60, 0);
+    public static final Block MARKER_BLOCK = Blocks.LODESTONE;
+
+    /** True only for a world this mod raised the islands in. */
+    public static boolean isOurs(ServerWorld world) {
+        world.getChunk(0, 0);
+        return world.getBlockState(MARKER_POS).isOf(MARKER_BLOCK);
+    }
 
     /** Islands: x offset, z offset, radius, peak height above sea level. */
     private static final int[][] ISLANDS = {
@@ -60,6 +78,7 @@ public final class IslandMap {
             buildIsland(world, cx, cz, radius, peak, random);
             centres.add(new BlockPos(cx, peak, cz));
         }
+        world.setBlockState(MARKER_POS, MARKER_BLOCK.getDefaultState());
         IsoRts.LOG.info("raised {} islands around {}", centres.size(), origin.toShortString());
         return centres;
     }

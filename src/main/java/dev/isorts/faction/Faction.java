@@ -1,6 +1,7 @@
 package dev.isorts.faction;
 
 import dev.isorts.IsoRts;
+import dev.isorts.unit.Units;
 import dev.isorts.world.Structures;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.EntityType;
@@ -15,22 +16,24 @@ import net.minecraft.util.math.Box;
 import java.util.List;
 
 /**
- * A self-playing faction: it grows a settlement and raises units without any input.
+ * A self-playing faction: it raises units without any input, and grows a settlement if it is
+ * allowed to build.
  * <p>
- * ponytail: no resources, no economy, no combat. Growth is on timers, and the unit cap rises with
- * the number of buildings so expansion is visible rather than simulated. Add an economy when
- * something has to compete for it - right now nothing does.
+ * ponytail: no resources, no economy. Growth is on timers and the unit cap rises with the number
+ * of buildings, so expansion is visible rather than simulated. Add an economy when something has
+ * to compete for it - right now nothing does.
  */
 public final class Faction {
 
     /** Ticks between construction of one new building. */
     private static final int BUILD_INTERVAL = 1200;      // 60s
     /** Ticks between unit spawn attempts. */
-    private static final int SPAWN_INTERVAL = 400;       // 20s
+    private static final int SPAWN_INTERVAL = 200;       // 10s - battles need bodies
     private static final int MAX_BUILDINGS = 12;
     private static final int UNITS_PER_BUILDING = 1;
-    private static final int BASE_UNIT_CAP = 3;
-    private static final double UNIT_SEARCH_RADIUS = 80.0;
+    private static final int BASE_UNIT_CAP = 8;
+    /** Count our own units anywhere in the theatre: they march off to fight and must still count. */
+    private static final double UNIT_SEARCH_RADIUS = 400.0;
 
     /**
      * Building sites: eight compass directions per ring, ring two staggered between ring one's
@@ -68,6 +71,8 @@ public final class Faction {
     private final BlockPos muster;
     private final EntityType<? extends MobEntity> unitType;
     private final String[] houseTemplates;
+    /** False on a hand-built map: dropping village houses on someone's castle map is vandalism. */
+    private boolean mayBuild = true;
 
     private int buildings;
     private int buildTimer;
@@ -82,7 +87,7 @@ public final class Faction {
         this.houseTemplates = houseTemplates;
         // Stagger the two factions so they do not act on the same tick.
         this.buildTimer = BUILD_INTERVAL / 2;
-        this.spawnTimer = SPAWN_INTERVAL / 2;
+        this.spawnTimer = 40;                   // first wave promptly, so there is a battle to see
     }
 
     public String name() {
@@ -93,8 +98,17 @@ public final class Faction {
         return home;
     }
 
+    public BlockPos muster() {
+        return muster;
+    }
+
     public int buildings() {
         return buildings;
+    }
+
+    public Faction noBuilding() {
+        mayBuild = false;
+        return this;
     }
 
     public void tick(ServerWorld world) {
@@ -102,35 +116,36 @@ public final class Faction {
             spawnTimer = SPAWN_INTERVAL;
             trySpawnUnit(world);
         }
-        if (--buildTimer <= 0) {
+        if (mayBuild && --buildTimer <= 0) {
             buildTimer = BUILD_INTERVAL;
             tryBuild(world);
         }
     }
 
-    private void trySpawnUnit(ServerWorld world) {
+    /** @return the unit, or null if the cap is reached or spawning failed */
+    public MobEntity trySpawnUnit(ServerWorld world) {
         int cap = BASE_UNIT_CAP + buildings * UNITS_PER_BUILDING;
         Box area = new Box(home).expand(UNIT_SEARCH_RADIUS);
-        List<? extends MobEntity> present = world.getEntitiesByType(unitType, area, e -> true);
+        List<? extends MobEntity> present =
+                world.getEntitiesByType(unitType, area, e -> name.equals(dev.isorts.unit.Units.factionOf(e)));
         if (present.size() >= cap) {
-            return;
+            return null;
         }
         MobEntity unit = unitType.create(world, SpawnReason.EVENT);
         if (unit == null) {
-            return;
+            return null;
         }
-        if (unit instanceof net.minecraft.entity.passive.IronGolemEntity golem) {
-            golem.setPlayerCreated(true);       // never hostile to the player
-        }
+        Units.enlist(unit, name);
         // Scatter around the muster point so units don't spawn inside each other.
-        int x = muster.getX() + world.getRandom().nextInt(5) - 2;
-        int z = muster.getZ() + world.getRandom().nextInt(5) - 2;
+        int x = muster.getX() + world.getRandom().nextInt(7) - 3;
+        int z = muster.getZ() + world.getRandom().nextInt(7) - 3;
         int y = Structures.terrainY(world, x, z);
         unit.refreshPositionAndAngles(x + 0.5, y, z + 0.5, 0.0f, 0.0f);
-        unit.setPersistent();
-        if (world.spawnEntity(unit)) {
-            IsoRts.LOG.info("[{}] raised a unit ({}/{})", name, present.size() + 1, cap);
+        if (!world.spawnEntity(unit)) {
+            return null;
         }
+        IsoRts.LOG.info("[{}] raised a unit ({}/{}) at {} {} {}", name, present.size() + 1, cap, x, y, z);
+        return unit;
     }
 
     /** Centre of building slot n, ring by ring outward from home. */
@@ -199,12 +214,18 @@ public final class Faction {
         buildings = Math.min(found, MAX_BUILDINGS);
     }
 
-    public static Faction castle(BlockPos home) {
-        // Muster outside the south gate (wall is at +9, so +13 is clear of it).
-        return new Faction("Castle", home, home.add(0, 0, 13), EntityType.IRON_GOLEM, TAIGA_HOUSES);
+    /** The defenders: iron golems, which never target players once flagged player-created. */
+    public static Faction kingdom(BlockPos home) {
+        return new Faction(Units.KINGDOM, home, home.add(0, 0, 13),
+                EntityType.IRON_GOLEM, TAIGA_HOUSES);
     }
 
-    public static Faction village(BlockPos home) {
-        return new Faction("Village", home, home.add(5, 0, 5), EntityType.VILLAGER, PLAINS_HOUSES);
+    /**
+     * The attackers: vindicators. Armed, human-shaped, and they already know how to fight - the
+     * only reason they are safe to use is that {@code UnitAI} strips any player they target.
+     */
+    public static Faction raiders(BlockPos home) {
+        return new Faction(Units.RAIDERS, home, home.add(0, 0, -13),
+                EntityType.VINDICATOR, PLAINS_HOUSES);
     }
 }

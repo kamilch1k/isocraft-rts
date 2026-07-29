@@ -3,6 +3,7 @@ package dev.isorts.client;
 import dev.isorts.IsoRts;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.ScreenshotRecorder;
+import net.minecraft.util.math.BlockPos;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,6 +19,9 @@ import java.util.List;
  *   state fp|iso|rts           jump straight to a control state
  *   cam x y z yaw pitch        place the RTS camera exactly (requires rts state)
  *   respawn                    click through the death screen
+ *   probe                      log cursor, FOV and where each unit projects on screen
+ *   selectall                  select every friendly unit nearby
+ *   order x y z                order the selection to a block
  * </pre>
  * ponytail: a polled file, not a socket or RCON. One writer, one reader, five-tick latency is
  * fine for taking screenshots; a protocol server would be pure ceremony.
@@ -74,6 +78,10 @@ final class ControlFile {
                 IsoRts.LOG.info("[ctl] snap requested");
             }
             case "state" -> owner.setState(a[1]);
+            case "probe" -> owner.probe();
+            case "selectall" -> owner.selectAllFromTerminal();
+            case "order" -> owner.orderTo(new BlockPos(
+                    Integer.parseInt(a[1]), Integer.parseInt(a[2]), Integer.parseInt(a[3])));
             case "respawn" -> {
                 if (client.player != null && client.player.isDead()) {
                     client.player.requestRespawn();
