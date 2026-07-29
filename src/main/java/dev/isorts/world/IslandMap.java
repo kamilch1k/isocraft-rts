@@ -65,22 +65,34 @@ public final class IslandMap {
     }
 
     /**
-     * One island: a squashed dome, sand at the waterline, grass above.
+     * One island: a squashed dome with an irregular coastline, sand at the waterline, grass above.
      * <p>
-     * The profile is {@code 1 - (d/r)^2}, which is flat across the middle and steepens at the
-     * rim - buildable in the centre, and it still reads as an island from the shore.
+     * The height profile is {@code 1 - (d/r)^2}, which is flat across the middle and steepens at
+     * the rim - buildable in the centre, and it still reads as an island from the shore. The
+     * radius is modulated around the perimeter by two sine waves (and the surface by low bumps),
+     * because a perfect circle of grass reads as a plate, not a place. Phases derive from the
+     * island's position, so regeneration is deterministic.
      */
     private static void buildIsland(ServerWorld world, int cx, int cz, int radius, int peak, Random random) {
         int rise = peak - SEA_FLOOR;
+        double p1 = (cx * 31 + cz * 17) * 0.05;
+        double p2 = (cx * 13 - cz * 7) * 0.05;
 
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dz = -radius; dz <= radius; dz++) {
+        int reach = (int) Math.ceil(radius * 1.35);
+        for (int dx = -reach; dx <= reach; dx++) {
+            for (int dz = -reach; dz <= reach; dz++) {
+                double theta = Math.atan2(dz, dx);
+                double wobble = 1.0 + 0.22 * Math.sin(3.0 * theta + p1)
+                        + 0.12 * Math.sin(7.0 * theta + p2);
+                double r = radius * wobble;
                 double d = Math.sqrt(dx * dx + dz * dz);
-                if (d > radius) {
+                if (d > r) {
                     continue;
                 }
-                double t = d / radius;
-                int top = SEA_FLOOR + (int) Math.round(rise * (1.0 - t * t));
+                double t = d / r;
+                // Low rolling bumps, faded towards the shore so beaches stay clean.
+                double bump = 1.4 * Math.sin(dx * 0.23 + p2) * Math.sin(dz * 0.19 + p1) * (1.0 - t);
+                int top = SEA_FLOOR + (int) Math.round(rise * (1.0 - t * t) + bump);
                 if (top <= SEA_FLOOR) {
                     continue;
                 }
@@ -110,17 +122,18 @@ public final class IslandMap {
             }
         }
 
-        scatterTrees(world, cx, cz, radius, peak, random);
+        scatterTrees(world, cx, cz, radius, random);
+        scatterFlora(world, cx, cz, radius, random);
     }
 
-    /** A handful of trees, kept clear of the centre so bases have room. */
-    private static void scatterTrees(ServerWorld world, int cx, int cz, int radius, int peak, Random random) {
-        int attempts = radius / 2;
+    /** Trees, kept clear of the centre so bases have room. */
+    private static void scatterTrees(ServerWorld world, int cx, int cz, int radius, Random random) {
+        int attempts = radius;
         for (int i = 0; i < attempts; i++) {
             int dx = random.nextInt(radius * 2) - radius;
             int dz = random.nextInt(radius * 2) - radius;
             double d = Math.sqrt(dx * dx + dz * dz);
-            if (d < radius * 0.45 || d > radius * 0.9) {
+            if (d < radius * 0.45 || d > radius * 0.95) {
                 continue;                       // leave the middle free, keep off the shoreline
             }
             int x = cx + dx;
@@ -133,6 +146,27 @@ public final class IslandMap {
                 continue;
             }
             buildTree(world, new BlockPos(x, y, z), 4 + random.nextInt(3), random);
+        }
+    }
+
+    /** Grass and the odd flower on bare turf - cheap, and it stops the ground reading as a lawn. */
+    private static void scatterFlora(ServerWorld world, int cx, int cz, int radius, Random random) {
+        var flowers = new net.minecraft.block.Block[] {
+                Blocks.POPPY, Blocks.DANDELION, Blocks.CORNFLOWER };
+        int attempts = radius * 3;
+        for (int i = 0; i < attempts; i++) {
+            int x = cx + random.nextInt(radius * 2) - radius;
+            int z = cz + random.nextInt(radius * 2) - radius;
+            int y = Structures.groundY(world, x, z);
+            BlockPos p = new BlockPos(x, y, z);
+            if (!world.getBlockState(p).isAir()
+                    || !world.getBlockState(p.down()).isOf(Blocks.GRASS_BLOCK)) {
+                continue;
+            }
+            var block = random.nextInt(5) == 0
+                    ? flowers[random.nextInt(flowers.length)]
+                    : Blocks.SHORT_GRASS;
+            world.setBlockState(p, block.getDefaultState());
         }
     }
 

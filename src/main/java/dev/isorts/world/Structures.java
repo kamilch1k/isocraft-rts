@@ -14,6 +14,7 @@ import net.minecraft.util.math.random.Random;
 import net.minecraft.world.Heightmap;
 
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Procedural structures, built block by block.
@@ -35,6 +36,33 @@ public final class Structures {
      */
     public static int groundY(ServerWorld world, int x, int z) {
         world.getChunk(x >> 4, z >> 4);
+        return world.getTopY(Heightmap.Type.WORLD_SURFACE, x, z);
+    }
+
+    /** Blocks that count as actual terrain when looking for the ground. */
+    private static final Set<Block> TERRAIN = Set.of(
+            Blocks.GRASS_BLOCK, Blocks.DIRT, Blocks.SAND, Blocks.GRAVEL, Blocks.STONE,
+            Blocks.SANDSTONE, Blocks.WATER, Blocks.BEDROCK, Blocks.DIRT_PATH,
+            Blocks.STONE_BRICKS, Blocks.COBBLESTONE);
+
+    /**
+     * The real terrain height at x/z, seen through anything built or grown on top of it.
+     * <p>
+     * {@link #groundY} uses the WORLD_SURFACE heightmap, which includes houses and trees - so a
+     * "place at ground level" call next to an existing house landed on its ROOF, which is exactly
+     * how the settlements ended up as stacks of buildings. This scans down past everything that
+     * is not terrain.
+     */
+    public static int terrainY(ServerWorld world, int x, int z) {
+        world.getChunk(x >> 4, z >> 4);
+        BlockPos.Mutable p = new BlockPos.Mutable(
+                x, world.getTopY(Heightmap.Type.WORLD_SURFACE, x, z) - 1, z);
+        while (p.getY() > world.getBottomY()) {
+            if (TERRAIN.contains(world.getBlockState(p).getBlock())) {
+                return p.getY() + 1;
+            }
+            p.move(0, -1, 0);
+        }
         return world.getTopY(Heightmap.Type.WORLD_SURFACE, x, z);
     }
 

@@ -2,9 +2,11 @@ package dev.isorts.faction;
 
 import dev.isorts.IsoRts;
 import dev.isorts.world.Structures;
+import net.minecraft.block.BlockState;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.BlockRotation;
 import net.minecraft.util.math.BlockPos;
@@ -30,6 +32,15 @@ public final class Faction {
     private static final int BASE_UNIT_CAP = 3;
     private static final double UNIT_SEARCH_RADIUS = 80.0;
 
+    /**
+     * Building sites: eight compass directions per ring, ring two staggered between ring one's
+     * spokes. The first ring must clear the castle wall plus half the widest template
+     * (9 + 6 + a path), which is why the old spacing of 11 jammed houses into the curtain wall.
+     */
+    private static final int FIRST_RING = 18;
+    private static final int RING_STEP = 14;
+    private static final int SLOTS_PER_RING = 8;
+
     /** Vanilla village house templates, so buildings look like real village houses. */
     private static final String[] PLAINS_HOUSES = {
             "village/plains/houses/plains_small_house_1",
@@ -53,6 +64,8 @@ public final class Faction {
 
     private final String name;
     private final BlockPos home;
+    /** Where fresh units appear - outside the walls, not inside the keep. */
+    private final BlockPos muster;
     private final EntityType<? extends MobEntity> unitType;
     private final String[] houseTemplates;
 
@@ -60,10 +73,11 @@ public final class Faction {
     private int buildTimer;
     private int spawnTimer;
 
-    public Faction(String name, BlockPos home, EntityType<? extends MobEntity> unitType,
-                   String[] houseTemplates) {
+    public Faction(String name, BlockPos home, BlockPos muster,
+                   EntityType<? extends MobEntity> unitType, String[] houseTemplates) {
         this.name = name;
         this.home = home;
+        this.muster = muster;
         this.unitType = unitType;
         this.houseTemplates = houseTemplates;
         // Stagger the two factions so they do not act on the same tick.
@@ -105,37 +119,51 @@ public final class Faction {
         if (unit == null) {
             return;
         }
-        int y = Structures.groundY(world, home.getX(), home.getZ());
-        unit.refreshPositionAndAngles(home.getX() + 0.5, y, home.getZ() + 0.5, 0.0f, 0.0f);
+        if (unit instanceof net.minecraft.entity.passive.IronGolemEntity golem) {
+            golem.setPlayerCreated(true);       // never hostile to the player
+        }
+        // Scatter around the muster point so units don't spawn inside each other.
+        int x = muster.getX() + world.getRandom().nextInt(5) - 2;
+        int z = muster.getZ() + world.getRandom().nextInt(5) - 2;
+        int y = Structures.terrainY(world, x, z);
+        unit.refreshPositionAndAngles(x + 0.5, y, z + 0.5, 0.0f, 0.0f);
         unit.setPersistent();
         if (world.spawnEntity(unit)) {
             IsoRts.LOG.info("[{}] raised a unit ({}/{})", name, present.size() + 1, cap);
         }
     }
 
-    /** Add one building, spiralling outward from home so the settlement visibly grows. */
+    /** Centre of building slot n, ring by ring outward from home. */
+    private BlockPos slotPos(int index) {
+        int ring = index / SLOTS_PER_RING;
+        int slot = index % SLOTS_PER_RING;
+        // Offset ring two's spokes by half a step so it does not shadow ring one.
+        double angle = slot * (Math.PI * 2 / SLOTS_PER_RING) + ring * (Math.PI / SLOTS_PER_RING);
+        int dist = FIRST_RING + ring * RING_STEP;
+        return home.add((int) Math.round(Math.sin(angle) * dist), 0,
+                (int) Math.round(Math.cos(angle) * dist));
+    }
+
+    /** True if something man-made already stands at ground level here (trees don't count). */
+    private static boolean occupied(ServerWorld world, int x, int y, int z) {
+        BlockState at = world.getBlockState(new BlockPos(x, y, z));
+        return !at.isAir() && !at.isIn(BlockTags.LOGS) && !at.isIn(BlockTags.LEAVES)
+                && !at.isIn(BlockTags.FLOWERS) && !at.isIn(BlockTags.REPLACEABLE);
+    }
+
+    /** Add one building in the next free slot, spiralling outward so the settlement grows. */
     private void tryBuild(ServerWorld world) {
         if (buildings >= MAX_BUILDINGS) {
             return;
         }
-        int ring = 1 + buildings / 4;
-        int slot = buildings % 4;
-        int spacing = 11;
-        int dx = switch (slot) {
-            case 0 -> ring * spacing;
-            case 1 -> -ring * spacing;
-            default -> 0;
-        };
-        int dz = switch (slot) {
-            case 2 -> ring * spacing;
-            case 3 -> -ring * spacing;
-            default -> 0;
-        };
+        BlockPos site = slotPos(buildings);
+        int x = site.getX();
+        int z = site.getZ();
+        int y = Structures.terrainY(world, x, z);
 
-        int x = home.getX() + dx;
-        int z = home.getZ() + dz;
-        int y = Structures.groundY(world, x, z);
-        if (y <= world.getBottomY() + 2) {
+        // Underwater or occupied: burn the slot and move on rather than stacking or stalling.
+        if (y <= world.getSeaLevel() || occupied(world, x, y, z)) {
+            buildings++;
             return;
         }
 
@@ -151,16 +179,32 @@ public final class Faction {
         IsoRts.LOG.info("[{}] built {} at {} {} {} ({} total)", name, template, x, y, z, buildings);
     }
 
-    /** Restore counters when a world is re-entered, by counting what is already standing. */
-    public void restoreFrom(int existingBuildings) {
-        this.buildings = Math.min(existingBuildings, MAX_BUILDINGS);
+    /** Build n houses immediately - the starting settlement on a fresh map. */
+    public void buildNow(ServerWorld world, int n) {
+        for (int i = 0; i < n; i++) {
+            tryBuild(world);
+        }
+    }
+
+    /** Re-enter an existing world: count what is standing in our slots instead of persisting it. */
+    public void restore(ServerWorld world) {
+        int found = 0;
+        for (int i = 0; i < MAX_BUILDINGS; i++) {
+            BlockPos s = slotPos(i);
+            int y = Structures.terrainY(world, s.getX(), s.getZ());
+            if (occupied(world, s.getX(), y, s.getZ())) {
+                found++;
+            }
+        }
+        buildings = Math.min(found, MAX_BUILDINGS);
     }
 
     public static Faction castle(BlockPos home) {
-        return new Faction("Castle", home, EntityType.IRON_GOLEM, TAIGA_HOUSES);
+        // Muster outside the south gate (wall is at +9, so +13 is clear of it).
+        return new Faction("Castle", home, home.add(0, 0, 13), EntityType.IRON_GOLEM, TAIGA_HOUSES);
     }
 
     public static Faction village(BlockPos home) {
-        return new Faction("Village", home, EntityType.VILLAGER, PLAINS_HOUSES);
+        return new Faction("Village", home, home.add(5, 0, 5), EntityType.VILLAGER, PLAINS_HOUSES);
     }
 }

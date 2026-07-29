@@ -119,6 +119,33 @@ powershell -File tools\worldgen.ps1 -WorldName "IsoWorld"
 | right-click ground | move order |
 | `N` | Isocraft settings |
 
+The isometric view is not toggled with Isocraft's own keybinding: `IsocraftBridge` reaches its
+`CameraController` by reflection and enforces the enabled state every tick, so the mod's view can
+never drift out of sync with our state machine.
+
+## Terminal remote control
+
+The game can be driven - and seen - entirely from a terminal. The client polls
+`<instance>/isorts-ctl.txt` every 5 ticks, executes each line, and deletes the file:
+
+```
+snap                  screenshot -> screenshots/isorts-snap.png (overwrites)
+state fp|iso|rts      jump straight to a control state
+cam x y z yaw pitch   place the RTS camera exactly (rts state only)
+respawn               click through the death screen
+```
+
+```powershell
+Set-Content C:\cc\isocraft-real\isorts-ctl.txt "snap" -Encoding ascii
+```
+
+This exists because the project rule is *no computer-use tooling*: screenshots via `snap` are how
+camera and worldgen changes get verified without a human looking at the window. Leave a couple of
+seconds between a `cam` and a `snap` - a same-batch snap captures the previous frame.
+
+Note `pauseOnLostFocus:false` in options.txt: without it the whole self-playing simulation
+freezes the moment the window loses focus, which on Desktop 2 is always.
+
 ## Toolchain notes
 
 Hard-won, all of it non-obvious:

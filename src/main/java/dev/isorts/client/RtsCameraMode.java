@@ -50,9 +50,14 @@ public final class RtsCameraMode {
      */
     private static final int ISO_FOV = 30;
 
-    private static final double ENTRY_HEIGHT = 110.0;
-    private static final double MIN_HEIGHT_ABOVE_GROUND = 12.0;
-    private static final double MAX_HEIGHT = 380.0;
+    /**
+     * RTS heights, verified by screenshot: at 110 blocks up the whole map dissolved into
+     * Complementary's atmospheric fog - the "camera is broken" feel was partly just this. At ~40
+     * the terrain reads crisply and one screen covers about an island.
+     */
+    private static final double ENTRY_HEIGHT = 40.0;
+    private static final double MIN_HEIGHT_ABOVE_GROUND = 8.0;
+    private static final double MAX_HEIGHT = 140.0;
 
     /** True isometric: equal foreshortening on all three axes. */
     private static final float DEFAULT_PITCH = 35.264f;
@@ -147,6 +152,11 @@ public final class RtsCameraMode {
             rightDragDistance = 0.0;
 
             camera = new ArmorStandEntity(EntityType.ARMOR_STAND, client.world);
+            // A client-side entity gets the next id from the CLIENT counter, which collides with
+            // ids the SERVER is handing to freshly spawned units - and when the server's entity
+            // arrives, it replaces ours and the camera teleports to wherever that unit is. The
+            // classic freecam trick: park the id where the server will never reach.
+            camera.setId(Integer.MAX_VALUE - 4242);
             camera.setInvisible(true);
             camera.setNoGravity(true);
             camera.setInvulnerable(true);
@@ -340,6 +350,24 @@ public final class RtsCameraMode {
             }
         }
         rightWasDown = down;
+    }
+
+    /** Place the camera exactly, no easing - used by the terminal control file for screenshots. */
+    public void setPose(double x, double y, double z, float newYaw, float newPitch) {
+        if (!active) {
+            return;
+        }
+        targetX = camX = x;
+        targetY = camY = y;
+        targetZ = camZ = z;
+        targetYaw = yaw = newYaw;
+        targetPitch = pitch = newPitch;
+        if (camera != null) {
+            camera.setPosition(camX, camY, camZ);
+            camera.setYaw(yaw);
+            camera.setPitch(pitch);
+            camera.setLastPositionAndAngles(camera.getEntityPos(), yaw, pitch);
+        }
     }
 
     /** Never let the camera sink into the ground while panning over hills. */

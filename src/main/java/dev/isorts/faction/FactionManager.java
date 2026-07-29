@@ -4,29 +4,26 @@ import dev.isorts.IsoRts;
 import dev.isorts.world.IslandMap;
 import dev.isorts.world.Structures;
 import net.minecraft.block.Blocks;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
-import net.minecraft.util.BlockRotation;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldProperties;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Lays out the scenario once per world, then ticks the factions so the game plays itself.
  * <p>
  * ponytail: state lives in memory and is rebuilt from what is standing in the world on reload -
- * a lantern at the castle keep is the "already built" marker. That beats defining a persistent
- * save format for two integers.
+ * counting the buildings in the factions' own slots. That beats defining a persistent save
+ * format for two integers.
  */
 public final class FactionManager {
 
-    /** Distance either side of the player's spawn to place the two settlements. */
-    private static final int SETTLEMENT_OFFSET = 60;
     private static final int CASTLE_HALF_WIDTH = 9;
-    /** How far to hunt around the desired spot for level, low-lying ground. */
-    private static final int SITE_SEARCH_RADIUS = 48;
 
     private final List<Faction> factions = new ArrayList<>();
     private boolean built;
@@ -44,8 +41,12 @@ public final class FactionManager {
      * <p>
      * The layout is anchored at world origin rather than wherever the player happens to spawn,
      * so the map is deterministic and re-entering a world always finds the same islands.
+     * <p>
+     * Runs BEFORE anything spawns units near the player: the islands are raised on top of
+     * wherever the flat preset put the player, so the player (and anything already seeded around
+     * them) would end up entombed. The player is teleported onto the new centre island instead.
      */
-    public void ensureScenario(ServerWorld world, BlockPos playerPos) {
+    public void ensureScenario(ServerWorld world, ServerPlayerEntity player) {
         if (built) {
             return;
         }
@@ -69,29 +70,33 @@ public final class FactionManager {
         BlockPos castleSite = surfacePos(world, islands.get(0).getX(), islands.get(0).getZ());
         BlockPos villageSite = surfacePos(world, islands.get(1).getX(), islands.get(1).getZ());
 
+        Faction castle = Faction.castle(castleSite);
+        Faction village = Faction.village(villageSite);
+
         if (!alreadyBuilt) {
             IsoRts.LOG.info("building bases: castle at {}, village at {}",
                     castleSite.toShortString(), villageSite.toShortString());
             Structures.buildCastle(world, castleSite, CASTLE_HALF_WIDTH);
             Structures.buildWell(world, villageSite);
-            // Seed the village with real vanilla houses so it reads as a village immediately.
-            seedVillageHouse(world, villageSite.add(14, 0, -4), "village/plains/houses/plains_medium_house_1");
-            seedVillageHouse(world, villageSite.add(-14, 0, 5), "village/plains/houses/plains_small_house_1");
-            seedVillageHouse(world, villageSite.add(3, 0, 15), "village/plains/houses/plains_butcher_shop_1");
+            // A starting settlement, through the same slot logic the factions grow with - so
+            // nothing ever gets built where a seed house already stands.
+            castle.buildNow(world, 2);
+            village.buildNow(world, 3);
 
-            // Put spawn on the contested centre island, not wherever the flat preset dropped it.
+            // Spawn on the contested centre island, and move the player there NOW - the island
+            // was just raised over wherever the flat preset dropped them.
             BlockPos centre = surfacePos(world, islands.get(2).getX(), islands.get(2).getZ());
             // 1.21.11: spawn is a WorldProperties.SpawnPoint record, not a BlockPos + angle.
             world.setSpawnPoint(WorldProperties.SpawnPoint.create(
                     World.OVERWORLD, centre.up(), 0.0f, 0.0f));
+            if (player != null) {
+                player.teleport(world, centre.getX() + 0.5, centre.getY(), centre.getZ() + 0.5,
+                        Set.of(), 0.0f, 0.0f, false);
+            }
             IsoRts.LOG.info("world spawn set to centre island {}", centre.toShortString());
-        }
-
-        Faction castle = Faction.castle(castleSite);
-        Faction village = Faction.village(villageSite);
-        if (alreadyBuilt) {
-            castle.restoreFrom(countHouses(world, castleSite));
-            village.restoreFrom(countHouses(world, villageSite));
+        } else {
+            castle.restore(world);
+            village.restore(world);
         }
 
         factions.clear();
@@ -114,39 +119,7 @@ public final class FactionManager {
         built = false;
     }
 
-    private static void seedVillageHouse(ServerWorld world, BlockPos at, String template) {
-        BlockPos ground = surfacePos(world, at.getX(), at.getZ());
-        Structures.placeVillageHouse(world, ground, template, BlockRotation.NONE, world.getRandom());
-    }
-
-    /** Count houses by probing the ring slots a faction builds into. */
-    private static int countHouses(ServerWorld world, BlockPos home) {
-        int found = 0;
-        int spacing = 11;
-        for (int i = 0; i < 12; i++) {
-            int ring = 1 + i / 4;
-            int slot = i % 4;
-            int dx = switch (slot) {
-                case 0 -> ring * spacing;
-                case 1 -> -ring * spacing;
-                default -> 0;
-            };
-            int dz = switch (slot) {
-                case 2 -> ring * spacing;
-                case 3 -> -ring * spacing;
-                default -> 0;
-            };
-            int x = home.getX() + dx;
-            int z = home.getZ() + dz;
-            int y = Structures.groundY(world, x, z);
-            if (!world.getBlockState(new BlockPos(x, y, z)).isAir()) {
-                found++;
-            }
-        }
-        return found;
-    }
-
     private static BlockPos surfacePos(ServerWorld world, int x, int z) {
-        return new BlockPos(x, Structures.groundY(world, x, z), z);
+        return new BlockPos(x, Structures.terrainY(world, x, z), z);
     }
 }

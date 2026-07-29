@@ -68,13 +68,16 @@ public class IsoRts implements ModInitializer {
         });
 
         // AFK seed: a fresh world should already have units in it, so there's something to watch.
+        // Order matters: the scenario FIRST (it raises islands over the flat-preset spawn and
+        // teleports the player onto them), and only then seed units around the player's real
+        // position - seeding first buried the whole starting squad under the new centre island.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
                 server.execute(() -> {
                     ServerPlayerEntity player = handler.getPlayer();
-                    seedUnits(player);
                     if (player != null) {
+                        FACTIONS.ensureScenario(player.getEntityWorld(), player);
                         giveStartingGear(player);
-                        FACTIONS.ensureScenario(player.getEntityWorld(), player.getBlockPos());
+                        seedUnits(player);
                     }
                 }));
 
@@ -162,6 +165,9 @@ public class IsoRts implements ModInitializer {
             if (unit == null) {
                 continue;
             }
+            // A non-player-created golem retaliates against the player; one of these killed the
+            // player while AFK. Player-created golems never target players - vanilla's own flag.
+            unit.setPlayerCreated(true);
             int dx = (i % 3) - 1;
             int dz = (i / 3) - 1;
             BlockPos at = world.getTopPosition(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES,
@@ -202,6 +208,7 @@ public class IsoRts implements ModInitializer {
             if (unit == null) {
                 continue;
             }
+            unit.setPlayerCreated(true);
             unit.refreshPositionAndAngles(pos.x + (i % 5) - 2, pos.y, pos.z + (i / 5.0), 0.0f, 0.0f);
             unit.setPersistent();
             world.spawnEntity(unit);

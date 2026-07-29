@@ -28,19 +28,12 @@ public class IsoRtsClient implements ClientModInitializer {
      *   <li>{@link #ISO_PLAYER} - Isocraft's isometric view, still controlling the character</li>
      *   <li>{@link #RTS} - detached RTS camera, not controlling the character</li>
      * </ol>
+     * Isocraft's view is not toggled but ENFORCED: every tick its enabled flag is set to what the
+     * current state demands, via {@link IsocraftBridge}. Blind toggling could drift out of parity
+     * (a stray press of its own binding, a toggle mid-transition), after which its player-relative
+     * camera fought the RTS camera - the "moves in weird directions" bug.
      */
     private enum State { FIRST_PERSON, ISO_PLAYER, RTS }
-
-    /**
-     * Isocraft's own toggle, moved off V to a key nobody presses so it cannot double-fire with
-     * ours. We drive it by synthesising this key's state - it must stay BOUND to something for
-     * that to work, which is why it is parked here rather than unbound.
-     */
-    private static final String ISO_TOGGLE_KEY = "key.keyboard.f8";
-
-    /** Isocraft's rotate keys, driven by middle-drag while in ISO_PLAYER. */
-    private static final String ROTATE_CCW_KEY = "key.keyboard.z";
-    private static final String ROTATE_CW_KEY = "key.keyboard.c";
 
     private static final double DRAG_DEADZONE = 1.5;
     private static final int ISO_AUTO_DELAY_TICKS = 40;
@@ -52,16 +45,10 @@ public class IsoRtsClient implements ClientModInitializer {
     private Entity selected;
 
     private final RtsCameraMode rtsCamera = new RtsCameraMode();
+    private final ControlFile controlFile = new ControlFile(this);
     private KeyBinding cycleKey;
 
     private int isoToggleCountdown = -1;
-    private int isoToggleRelease = -1;
-
-    private InputUtil.Key isoKey;
-    private InputUtil.Key ccwKey;
-    private InputUtil.Key cwKey;
-    private boolean ccwHeld;
-    private boolean cwHeld;
 
     private boolean middleWasDown;
     private double lastMouseX;
@@ -70,10 +57,6 @@ public class IsoRtsClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        isoKey = InputUtil.fromTranslationKey(ISO_TOGGLE_KEY);
-        ccwKey = InputUtil.fromTranslationKey(ROTATE_CCW_KEY);
-        cwKey = InputUtil.fromTranslationKey(ROTATE_CW_KEY);
-
         // 1.21.11: KeyBinding takes a KeyBinding.Category record, not a translation-key String.
         cycleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.isorts.cycle_view", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_V,
@@ -96,9 +79,13 @@ public class IsoRtsClient implements ClientModInitializer {
         IsoRts.LOG.info("Isocraft RTS client ready");
     }
 
+    RtsCameraMode rtsCamera() {
+        return rtsCamera;
+    }
+
     private void onTick(MinecraftClient client) {
+        controlFile.tick(client);
         if (client.player == null || client.world == null) {
-            releaseRotate();
             return;
         }
 
@@ -106,7 +93,18 @@ public class IsoRtsClient implements ClientModInitializer {
             cycle(client);
         }
 
-        handleIsoAutoToggle(client);
+        if (isoToggleCountdown > 0 && --isoToggleCountdown == 0) {
+            isoToggleCountdown = -1;
+            state = State.ISO_PLAYER;
+            IsoRts.LOG.info("auto-enabled isometric view");
+        }
+
+        // Enforce, don't toggle: Isocraft's camera is on exactly when we are in ISO_PLAYER.
+        boolean wantIso = state == State.ISO_PLAYER;
+        if (IsocraftBridge.available() && IsocraftBridge.isIso() != wantIso) {
+            IsocraftBridge.setIso(wantIso);
+        }
+
         rtsCamera.tick(client);
 
         if (!rtsCamera.isActive()) {
@@ -119,16 +117,15 @@ public class IsoRtsClient implements ClientModInitializer {
     private void cycle(MinecraftClient client) {
         switch (state) {
             case FIRST_PERSON -> {
-                tapIsoToggle();                 // Isocraft iso on
                 state = State.ISO_PLAYER;
                 say(client, "isometric - controlling character");
             }
             case ISO_PLAYER -> {
-                // Isocraft's iso view positions the camera relative to the player and would fight
-                // our detached camera, so hand rendering over cleanly: its view off, ours on.
-                tapIsoToggle();                 // Isocraft iso off
-                rtsCamera.enable(client);
+                // Isocraft's view positions the camera relative to the player and would fight our
+                // detached camera; the per-tick enforcement turns it off before rendering.
                 state = State.RTS;
+                IsocraftBridge.setIso(false);
+                rtsCamera.enable(client);
             }
             case RTS -> {
                 rtsCamera.disable(client);
@@ -138,33 +135,29 @@ public class IsoRtsClient implements ClientModInitializer {
         }
     }
 
-    /**
-     * Fire Isocraft's toggle exactly once.
-     * <p>
-     * Deliberately only bumps the press counter that {@code wasPressed()} drains - it does NOT
-     * mark the key held. Holding it (as this did) leaves {@code isPressed()} true for several
-     * ticks, and a poll-based handler then toggles the view on/off/on, which reads as a stutter
-     * during the transition.
-     */
-    private void tapIsoToggle() {
-        KeyBinding.onKeyPressed(isoKey);
-    }
-
-    private void handleIsoAutoToggle(MinecraftClient client) {
-        if (isoToggleCountdown > 0) {
-            isoToggleCountdown--;
-            if (isoToggleCountdown == 0) {
-                isoToggleCountdown = -1;
-                tapIsoToggle();
-                state = State.ISO_PLAYER;
-                IsoRts.LOG.info("auto-enabled isometric view");
-            }
+    /** Jump straight to a named state - used by the terminal control file. */
+    void setState(String name) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        State target = switch (name) {
+            case "fp" -> State.FIRST_PERSON;
+            case "iso" -> State.ISO_PLAYER;
+            case "rts" -> State.RTS;
+            default -> null;
+        };
+        if (target == null || client.player == null) {
+            return;
         }
+        isoToggleCountdown = -1;
+        for (int i = 0; i < 3 && state != target; i++) {
+            cycle(client);
+        }
+        IsoRts.LOG.info("[ctl] state -> {}", state);
     }
 
     /**
-     * Middle-drag rotates Isocraft's camera while controlling the character. In RTS mode
-     * middle-drag pans instead, so this is skipped there.
+     * Middle-drag rotates Isocraft's camera while controlling the character, through the same
+     * continuous-rotation input its own keys feed. In RTS mode middle-drag looks around instead,
+     * so this is skipped there.
      */
     private void handleMiddleDragRotate(MinecraftClient client) {
         long window = client.getWindow().getHandle();
@@ -173,7 +166,7 @@ public class IsoRtsClient implements ClientModInitializer {
 
         if (!down) {
             if (middleWasDown) {
-                releaseRotate();
+                IsocraftBridge.setRotationInput(0);
             }
             middleWasDown = false;
             return;
@@ -188,27 +181,12 @@ public class IsoRtsClient implements ClientModInitializer {
         lastMouseX = mouseX;
 
         if (dx > DRAG_DEADZONE) {
-            setRotate(false, true);
+            IsocraftBridge.setRotationInput(1);
         } else if (dx < -DRAG_DEADZONE) {
-            setRotate(true, false);
+            IsocraftBridge.setRotationInput(-1);
         } else {
-            setRotate(false, false);
+            IsocraftBridge.setRotationInput(0);
         }
-    }
-
-    private void setRotate(boolean ccw, boolean cw) {
-        if (ccw != ccwHeld) {
-            KeyBinding.setKeyPressed(ccwKey, ccw);
-            ccwHeld = ccw;
-        }
-        if (cw != cwHeld) {
-            KeyBinding.setKeyPressed(cwKey, cw);
-            cwHeld = cw;
-        }
-    }
-
-    private void releaseRotate() {
-        setRotate(false, false);
     }
 
     /**
