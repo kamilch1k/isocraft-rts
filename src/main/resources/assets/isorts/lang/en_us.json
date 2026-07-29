@@ -1,4 +1,4 @@
 {
   "key.categories.isorts": "Isocraft RTS",
-  "key.isorts.rts_camera": "Toggle RTS camera (free-fly, no character control)"
+  "key.isorts.cycle_view": "Cycle view (first person / isometric / RTS camera)"
 }

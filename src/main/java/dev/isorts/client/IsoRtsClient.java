@@ -10,7 +10,6 @@ import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import org.lwjgl.glfw.GLFW;
 import net.minecraft.entity.Entity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
@@ -22,57 +21,70 @@ import org.lwjgl.glfw.GLFW;
 
 public class IsoRtsClient implements ClientModInitializer {
 
-    /** Isocraft's rotate keys, as bound in options.txt. We drive these rather than its internals. */
+    /**
+     * The three control states, cycled by one key.
+     * <ol>
+     *   <li>{@link #FIRST_PERSON} - normal Minecraft, controlling the character</li>
+     *   <li>{@link #ISO_PLAYER} - Isocraft's isometric view, still controlling the character</li>
+     *   <li>{@link #RTS} - detached RTS camera, not controlling the character</li>
+     * </ol>
+     */
+    private enum State { FIRST_PERSON, ISO_PLAYER, RTS }
+
+    /**
+     * Isocraft's own toggle, moved off V to a key nobody presses so it cannot double-fire with
+     * ours. We drive it by synthesising this key's state - it must stay BOUND to something for
+     * that to work, which is why it is parked here rather than unbound.
+     */
+    private static final String ISO_TOGGLE_KEY = "key.keyboard.f24";
+
+    /** Isocraft's rotate keys, driven by middle-drag while in ISO_PLAYER. */
     private static final String ROTATE_CCW_KEY = "key.keyboard.z";
     private static final String ROTATE_CW_KEY = "key.keyboard.c";
 
-    /** Isocraft's "toggle isometric camera" key, as bound in options.txt. */
-    private static final String ISO_TOGGLE_KEY = "key.keyboard.v";
-
-    /** Horizontal drag (in raw mouse units) before a rotate key is synthesised. */
     private static final double DRAG_DEADZONE = 1.5;
-
-    /** Ticks to wait after joining before flipping to isometric - the world needs to be in. */
     private static final int ISO_AUTO_DELAY_TICKS = 40;
 
+    private State state = State.FIRST_PERSON;
     private Entity selected;
 
     private final RtsCameraMode rtsCamera = new RtsCameraMode();
-    private KeyBinding rtsCameraKey;
+    private KeyBinding cycleKey;
 
     private int isoToggleCountdown = -1;
     private int isoToggleRelease = -1;
-    private InputUtil.Key isoKey;
 
-    private boolean middleWasDown;
-    private double lastMouseX;
+    private InputUtil.Key isoKey;
     private InputUtil.Key ccwKey;
     private InputUtil.Key cwKey;
     private boolean ccwHeld;
     private boolean cwHeld;
 
+    private boolean middleWasDown;
+    private double lastMouseX;
+
     @Override
     public void onInitializeClient() {
+        isoKey = InputUtil.fromTranslationKey(ISO_TOGGLE_KEY);
         ccwKey = InputUtil.fromTranslationKey(ROTATE_CCW_KEY);
         cwKey = InputUtil.fromTranslationKey(ROTATE_CW_KEY);
-        isoKey = InputUtil.fromTranslationKey(ISO_TOGGLE_KEY);
 
-        // 1.21.11: the category is a KeyBinding.Category record, not a translation-key String.
-        rtsCameraKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.isorts.rts_camera", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_M,
+        // 1.21.11: KeyBinding takes a KeyBinding.Category record, not a translation-key String.
+        cycleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.isorts.cycle_view", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_V,
                 KeyBinding.Category.create(Identifier.of(IsoRts.MOD_ID, "isorts"))));
 
-        // Isocraft has no "start in isometric" setting, so tap its toggle shortly after joining.
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
-            isoToggleCountdown = ISO_AUTO_DELAY_TICKS;
+            state = State.FIRST_PERSON;
             selected = null;
+            isoToggleCountdown = ISO_AUTO_DELAY_TICKS;   // land in ISO_PLAYER
+            rtsCamera.hookScroll(client);
         });
 
         // A stale camera entity across a disconnect would leave the player unable to move.
         ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
-            if (rtsCamera.isActive()) {
-                rtsCamera.toggle(client);
-            }
+            rtsCamera.disable(client);
+            state = State.FIRST_PERSON;
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
@@ -84,29 +96,56 @@ public class IsoRtsClient implements ClientModInitializer {
             releaseRotate();
             return;
         }
-        while (rtsCameraKey.wasPressed()) {
-            rtsCamera.toggle(client);
+
+        while (cycleKey.wasPressed()) {
+            cycle(client);
         }
+
+        handleIsoAutoToggle(client);
         rtsCamera.tick(client);
 
-        handleIsoAutoToggle();
-        handleMiddleDragRotate(client);
+        if (!rtsCamera.isActive()) {
+            handleMiddleDragRotate(client);
+        }
         handleSelectionAndOrders(client);
     }
 
-    /**
-     * Synthesise a single tap of Isocraft's toggle key so the game starts in isometric view.
-     * ponytail: a tap, not a state query - we can't read Isocraft's internal enabled flag without
-     * coupling to it. If it ever ships a "default on" setting, delete this.
-     */
-    private void handleIsoAutoToggle() {
+    /** FIRST_PERSON -> ISO_PLAYER -> RTS -> FIRST_PERSON. */
+    private void cycle(MinecraftClient client) {
+        switch (state) {
+            case FIRST_PERSON -> {
+                tapIsoToggle();                 // Isocraft iso on
+                state = State.ISO_PLAYER;
+                say(client, "isometric - controlling character");
+            }
+            case ISO_PLAYER -> {
+                // Isocraft's iso view positions the camera relative to the player and would fight
+                // our detached camera, so hand rendering over cleanly: its view off, ours on.
+                tapIsoToggle();                 // Isocraft iso off
+                rtsCamera.enable(client);
+                state = State.RTS;
+            }
+            case RTS -> {
+                rtsCamera.disable(client);
+                state = State.FIRST_PERSON;
+                say(client, "first person");
+            }
+        }
+    }
+
+    private void tapIsoToggle() {
+        KeyBinding.setKeyPressed(isoKey, true);
+        KeyBinding.onKeyPressed(isoKey);
+        isoToggleRelease = 2;
+    }
+
+    private void handleIsoAutoToggle(MinecraftClient client) {
         if (isoToggleCountdown > 0) {
             isoToggleCountdown--;
             if (isoToggleCountdown == 0) {
-                KeyBinding.setKeyPressed(isoKey, true);
-                KeyBinding.onKeyPressed(isoKey);
-                isoToggleRelease = 2;
                 isoToggleCountdown = -1;
+                tapIsoToggle();
+                state = State.ISO_PLAYER;
                 IsoRts.LOG.info("auto-enabled isometric view");
             }
         }
@@ -120,12 +159,8 @@ public class IsoRtsClient implements ClientModInitializer {
     }
 
     /**
-     * Middle-drag camera rotation.
-     * <p>
-     * Isocraft binds rotation to hold-keys because in isometric mode the cursor is already
-     * consumed by aiming and click-to-move. Rather than mixin into its camera, we synthesise
-     * the key state its existing binding reads - so it keeps working if that mod updates.
-     * ponytail: no acceleration curve, no smoothing. Add if it feels wrong in the hand.
+     * Middle-drag rotates Isocraft's camera while controlling the character. In RTS mode
+     * middle-drag pans instead, so this is skipped there.
      */
     private void handleMiddleDragRotate(MinecraftClient client) {
         long window = client.getWindow().getHandle();
@@ -139,8 +174,7 @@ public class IsoRtsClient implements ClientModInitializer {
             middleWasDown = false;
             return;
         }
-
-        if (!middleWasDown) {          // drag just started - anchor, don't rotate yet
+        if (!middleWasDown) {
             middleWasDown = true;
             lastMouseX = mouseX;
             return;
@@ -174,9 +208,8 @@ public class IsoRtsClient implements ClientModInitializer {
     }
 
     /**
-     * Left-click a unit to select it, right-click ground to order it there.
-     * ponytail: uses the vanilla crosshair pick, which follows Isocraft's aim. Proper
-     * cursor unprojection (and box-select) is the upgrade once the loop is proven.
+     * ponytail: uses the vanilla crosshair pick, which follows whichever entity the camera is
+     * attached to. Cursor unprojection and drag-box select are the upgrade.
      */
     private void handleSelectionAndOrders(MinecraftClient client) {
         HitResult hit = client.crosshairTarget;
@@ -184,13 +217,11 @@ public class IsoRtsClient implements ClientModInitializer {
             return;
         }
 
-        if (client.options.attackKey.wasPressed()) {
-            if (hit.getType() == HitResult.Type.ENTITY) {
-                Entity entity = ((EntityHitResult) hit).getEntity();
-                if (IsoRts.isUnit(entity)) {
-                    selected = entity;
-                    say(client, "selected unit " + entity.getId());
-                }
+        if (client.options.attackKey.wasPressed() && hit.getType() == HitResult.Type.ENTITY) {
+            Entity entity = ((EntityHitResult) hit).getEntity();
+            if (IsoRts.isUnit(entity)) {
+                selected = entity;
+                say(client, "selected unit " + entity.getId());
             }
         }
 
