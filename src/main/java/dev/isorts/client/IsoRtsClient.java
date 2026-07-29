@@ -4,13 +4,16 @@ import dev.isorts.IsoRts;
 import dev.isorts.MoveOrderPayload;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import org.lwjgl.glfw.GLFW;
 import net.minecraft.entity.Entity;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -34,6 +37,9 @@ public class IsoRtsClient implements ClientModInitializer {
 
     private Entity selected;
 
+    private final RtsCameraMode rtsCamera = new RtsCameraMode();
+    private KeyBinding rtsCameraKey;
+
     private int isoToggleCountdown = -1;
     private int isoToggleRelease = -1;
     private InputUtil.Key isoKey;
@@ -51,10 +57,22 @@ public class IsoRtsClient implements ClientModInitializer {
         cwKey = InputUtil.fromTranslationKey(ROTATE_CW_KEY);
         isoKey = InputUtil.fromTranslationKey(ISO_TOGGLE_KEY);
 
+        // 1.21.11: the category is a KeyBinding.Category record, not a translation-key String.
+        rtsCameraKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.isorts.rts_camera", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_M,
+                KeyBinding.Category.create(Identifier.of(IsoRts.MOD_ID, "isorts"))));
+
         // Isocraft has no "start in isometric" setting, so tap its toggle shortly after joining.
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             isoToggleCountdown = ISO_AUTO_DELAY_TICKS;
             selected = null;
+        });
+
+        // A stale camera entity across a disconnect would leave the player unable to move.
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            if (rtsCamera.isActive()) {
+                rtsCamera.toggle(client);
+            }
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(this::onTick);
@@ -66,6 +84,11 @@ public class IsoRtsClient implements ClientModInitializer {
             releaseRotate();
             return;
         }
+        while (rtsCameraKey.wasPressed()) {
+            rtsCamera.toggle(client);
+        }
+        rtsCamera.tick(client);
+
         handleIsoAutoToggle();
         handleMiddleDragRotate(client);
         handleSelectionAndOrders(client);

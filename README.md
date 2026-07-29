@@ -31,8 +31,14 @@ The design target, in the author's words:
 3. **RTS camera** — detached free-flying view, *not* controlling the player: select units, issue
    commands, watch the simulation
 
-States 1 and 2 exist today (Isocraft's `V` toggle). State 3 is the next major piece, and it is the
-frame the self-playing simulation is meant to be watched in.
+States 1 and 2 come from Isocraft's `V` toggle. **State 3 is implemented** — press `M`.
+
+State 3 uses no mixins. The camera is an invisible armour stand set as
+`MinecraftClient#setCameraEntity`, and player movement is suppressed by swapping
+`ClientPlayerEntity#input` for a plain `Input`, whose `tick()` never reads the keyboard. Zeroing
+the field instead does not work: `KeyboardInput.tick()` rewrites it from live key state every tick.
+The mouse still turns the player's body, and the camera mirrors that rotation, so look works for
+free. Entering and leaving is guarded so a failure can never strand you without movement.
 
 ## Layout
 
@@ -73,6 +79,8 @@ powershell -File tools\worldgen.ps1 -WorldName "IsoWorld"
 | key | action |
 | --- | --- |
 | `V` | toggle isometric view |
+| `M` | toggle RTS camera (free-fly, no character control) |
+| `WASD` / space / shift | fly the RTS camera (hold sprint to go faster) |
 | `Z` / `C` | rotate camera |
 | middle-drag | rotate camera |
 | `PgUp` / `PgDn` | pitch |
@@ -106,8 +114,8 @@ Hard-won, all of it non-obvious:
 
 ## Roadmap
 
-- [ ] **State 3** — detached RTS camera, player input suppressed, cursor unprojection and
-      drag-box selection (replacing the current crosshair pick)
+- [x] **State 3** — detached free-flying RTS camera with player input suppressed
+- [ ] Cursor unprojection and drag-box selection (replacing the current crosshair pick)
 - [ ] **Self-playing factions** — periodic unit spawning, settlement building, expansion
 - [ ] **Dedicated map** — island archipelago with mountains, forests, cherry groves and villages
 - [ ] Custom unit entity (needs renderer + model + texture + model-layer registration)

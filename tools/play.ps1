@@ -18,7 +18,10 @@ $ErrorActionPreference = "Stop"
 if ($Instance -eq "iso") { $dir = "C:\cc\isocraft-real"; $mc = "1.21.11" }
 else                     { $dir = "C:\cc\isocraft";      $mc = "26.1.2"  }
 
-$launchArgs = @("C:\cc\isocraft\launch.py", "--dir", $dir, "--mc", $mc, "--size", "${Width}x${Height}")
+# resolve launch.py next to this script, so moving the repo doesn't break it
+$launchPy = Join-Path $PSScriptRoot "launch.py"
+if (-not (Test-Path $launchPy)) { throw "launch.py not found next to play.ps1 at $launchPy" }
+$launchArgs = @($launchPy, "--dir", $dir, "--mc", $mc, "--size", "${Width}x${Height}")
 if ($World) { $launchArgs += @("--world", $World) } else { $launchArgs += "--menu" }
 
 $log = Join-Path $env:TEMP "isocraft-launch-$Instance.log"
