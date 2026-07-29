@@ -1,11 +1,14 @@
 package dev.isorts.faction;
 
 import dev.isorts.IsoRts;
+import dev.isorts.world.IslandMap;
 import dev.isorts.world.Structures;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.BlockRotation;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.World;
+import net.minecraft.world.WorldProperties;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -36,20 +39,38 @@ public final class FactionManager {
         return factions;
     }
 
-    /** Build the scenario if it is not already there; otherwise just re-attach to it. */
-    public void ensureScenario(ServerWorld world, BlockPos near) {
+    /**
+     * Build the scenario if it is not already there; otherwise just re-attach to it.
+     * <p>
+     * The layout is anchored at world origin rather than wherever the player happens to spawn,
+     * so the map is deterministic and re-entering a world always finds the same islands.
+     */
+    public void ensureScenario(ServerWorld world, BlockPos playerPos) {
         if (built) {
             return;
         }
 
-        BlockPos castleSite = Structures.findFlatSite(world,
-                near.getX() - SETTLEMENT_OFFSET, near.getZ() - SETTLEMENT_OFFSET, SITE_SEARCH_RADIUS);
-        BlockPos villageSite = Structures.findFlatSite(world,
-                near.getX() + SETTLEMENT_OFFSET, near.getZ() + SETTLEMENT_OFFSET, SITE_SEARCH_RADIUS);
+        BlockPos origin = new BlockPos(0, IslandMap.SEA_LEVEL, 0);
 
-        boolean alreadyBuilt = world.getBlockState(castleSite.up(8)).isOf(Blocks.LANTERN);
+        // Land at the first island's centre means the map has already been raised.
+        BlockPos probe = new BlockPos(-110, IslandMap.SEA_LEVEL + 3, -80);
+        boolean alreadyBuilt = !world.getBlockState(probe).isAir()
+                && !world.getBlockState(probe).isOf(Blocks.WATER);
+
+        List<BlockPos> islands;
         if (!alreadyBuilt) {
-            IsoRts.LOG.info("building scenario: castle at {}, village at {}",
+            IsoRts.LOG.info("raising island map...");
+            islands = IslandMap.build(world, origin);
+        } else {
+            IsoRts.LOG.info("island map already present, re-attaching");
+            islands = IslandMap.centres(origin);
+        }
+
+        BlockPos castleSite = surfacePos(world, islands.get(0).getX(), islands.get(0).getZ());
+        BlockPos villageSite = surfacePos(world, islands.get(1).getX(), islands.get(1).getZ());
+
+        if (!alreadyBuilt) {
+            IsoRts.LOG.info("building bases: castle at {}, village at {}",
                     castleSite.toShortString(), villageSite.toShortString());
             Structures.buildCastle(world, castleSite, CASTLE_HALF_WIDTH);
             Structures.buildWell(world, villageSite);
@@ -57,8 +78,13 @@ public final class FactionManager {
             seedVillageHouse(world, villageSite.add(14, 0, -4), "village/plains/houses/plains_medium_house_1");
             seedVillageHouse(world, villageSite.add(-14, 0, 5), "village/plains/houses/plains_small_house_1");
             seedVillageHouse(world, villageSite.add(3, 0, 15), "village/plains/houses/plains_butcher_shop_1");
-        } else {
-            IsoRts.LOG.info("scenario already present, re-attaching");
+
+            // Put spawn on the contested centre island, not wherever the flat preset dropped it.
+            BlockPos centre = surfacePos(world, islands.get(2).getX(), islands.get(2).getZ());
+            // 1.21.11: spawn is a WorldProperties.SpawnPoint record, not a BlockPos + angle.
+            world.setSpawnPoint(WorldProperties.SpawnPoint.create(
+                    World.OVERWORLD, centre.up(), 0.0f, 0.0f));
+            IsoRts.LOG.info("world spawn set to centre island {}", centre.toShortString());
         }
 
         Faction castle = Faction.castle(castleSite);

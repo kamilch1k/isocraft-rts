@@ -7,7 +7,12 @@ param(
     [string]$WorldName = "IsoWorld",
     [string]$Seed      = "",
     [string]$Instance  = "C:\cc\isocraft-real",
-    [string]$McVersion = "1.21.11"
+    [string]$McVersion = "1.21.11",
+    # Flat ocean base for the RTS map - the mod raises islands out of it on first load.
+    # Layers stack from the world floor (-64): bedrock, 110 stone, 15 water.
+    # Sea floor lands at y=46 and the surface at y=61, close enough to normal sea level
+    # that vanilla structures and mob spawning behave.
+    [switch]$Ocean
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,9 +34,19 @@ if (-not (Test-Path $jar)) {
 # Mojang's EULA. Writing this asserts you accept it - you own the game, which we verified.
 Set-Content (Join-Path $work "eula.txt") "eula=true" -Encoding ascii
 
+$levelType = "minecraft:normal"
+$generatorSettings = ""
+if ($Ocean) {
+    $levelType = "minecraft:flat"
+    $layers = '{"block":"minecraft:bedrock","height":1},{"block":"minecraft:stone","height":110},{"block":"minecraft:water","height":15}'
+    $generatorSettings = '{"layers":[' + $layers + '],"biome":"minecraft:plains"}'
+}
+
 @"
 level-name=$WorldName
 level-seed=$Seed
+level-type=$levelType
+generator-settings=$generatorSettings
 online-mode=false
 view-distance=10
 spawn-protection=0
