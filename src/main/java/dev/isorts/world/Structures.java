@@ -3,8 +3,17 @@ package dev.isorts.world;
 import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.structure.StructurePlacementData;
+import net.minecraft.structure.StructureTemplate;
+import net.minecraft.util.BlockMirror;
+import net.minecraft.util.BlockRotation;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3i;
+import net.minecraft.util.math.random.Random;
 import net.minecraft.world.Heightmap;
+
+import java.util.Optional;
 
 /**
  * Procedural structures, built block by block.
@@ -146,6 +155,97 @@ public final class Structures {
                         world.setBlockState(new BlockPos(
                                 corner.getX() + dx, y + 4 + layer, corner.getZ() + dz),
                                 roof.getDefaultState());
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Find buildable ground near a desired spot: flat, and not up a mountain.
+     * <p>
+     * Placing at a fixed offset regardless of terrain put the first castle at y=158 and the
+     * village at y=197 - both on peaks, 39 blocks apart vertically. This samples candidates
+     * around the target and scores them on how level they are, preferring lowland.
+     *
+     * @param searchRadius how far from the desired spot to look
+     * @return the flattest candidate found, or the desired spot if nothing is better
+     */
+    public static BlockPos findFlatSite(ServerWorld world, int wantX, int wantZ, int searchRadius) {
+        BlockPos best = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (int dx = -searchRadius; dx <= searchRadius; dx += 8) {
+            for (int dz = -searchRadius; dz <= searchRadius; dz += 8) {
+                int x = wantX + dx;
+                int z = wantZ + dz;
+                int centre = groundY(world, x, z);
+                if (centre < world.getSeaLevel()) {
+                    continue;                       // underwater
+                }
+
+                // Roughness: how much the surface moves across the footprint.
+                int roughness = 0;
+                for (int[] o : new int[][] {{-10, -10}, {10, -10}, {-10, 10}, {10, 10}, {0, 12}, {12, 0}}) {
+                    roughness += Math.abs(groundY(world, x + o[0], z + o[1]) - centre);
+                }
+
+                // Prefer flat, then prefer lower ground so settlements sit in valleys not on peaks.
+                double score = roughness * 4.0 + Math.max(0, centre - world.getSeaLevel());
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = new BlockPos(x, centre, z);
+                }
+            }
+        }
+        return best != null ? best : new BlockPos(wantX, groundY(world, wantX, wantZ), wantZ);
+    }
+
+    /**
+     * Place one of Minecraft's own village house structures.
+     * <p>
+     * ponytail: these are the vanilla templates the game builds villages from, so the houses look
+     * exactly like real village houses - far better than anything worth hand-coding. Jigsaw and
+     * structure blocks are stripped afterwards; raw template placement leaves them visible because
+     * nothing is running the jigsaw assembler.
+     *
+     * @return true if the template existed and was placed
+     */
+    public static boolean placeVillageHouse(ServerWorld world, BlockPos ground, String templateId,
+                                            BlockRotation rotation, Random random) {
+        Optional<StructureTemplate> maybe =
+                world.getStructureTemplateManager().getTemplate(Identifier.ofVanilla(templateId));
+        if (maybe.isEmpty()) {
+            return false;
+        }
+        StructureTemplate template = maybe.get();
+        Vec3i size = template.getSize();
+
+        // Centre the footprint on the site and clear space for it.
+        BlockPos origin = ground.add(-size.getX() / 2, -1, -size.getZ() / 2);
+        levelArea(world, ground, Math.max(size.getX(), size.getZ()) / 2 + 2, Blocks.GRASS_BLOCK);
+
+        StructurePlacementData placement = new StructurePlacementData()
+                .setRotation(rotation)
+                .setMirror(BlockMirror.NONE)
+                .setIgnoreEntities(false);
+
+        boolean placed = template.place(world, origin, origin, placement, random, Block.NOTIFY_LISTENERS);
+        if (placed) {
+            stripStructureBlocks(world, origin, size);
+        }
+        return placed;
+    }
+
+    /** Village templates carry jigsaw markers; without the assembler running they stay visible. */
+    private static void stripStructureBlocks(ServerWorld world, BlockPos origin, Vec3i size) {
+        for (int dx = 0; dx < size.getX(); dx++) {
+            for (int dy = 0; dy < size.getY(); dy++) {
+                for (int dz = 0; dz < size.getZ(); dz++) {
+                    BlockPos p = origin.add(dx, dy, dz);
+                    if (world.getBlockState(p).isOf(Blocks.JIGSAW)
+                            || world.getBlockState(p).isOf(Blocks.STRUCTURE_BLOCK)) {
+                        world.setBlockState(p, Blocks.AIR.getDefaultState());
                     }
                 }
             }

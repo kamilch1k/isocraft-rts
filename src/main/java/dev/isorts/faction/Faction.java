@@ -2,12 +2,11 @@ package dev.isorts.faction;
 
 import dev.isorts.IsoRts;
 import dev.isorts.world.Structures;
-import net.minecraft.block.Block;
-import net.minecraft.block.Blocks;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.BlockRotation;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 
@@ -31,23 +30,42 @@ public final class Faction {
     private static final int BASE_UNIT_CAP = 3;
     private static final double UNIT_SEARCH_RADIUS = 80.0;
 
+    /** Vanilla village house templates, so buildings look like real village houses. */
+    private static final String[] PLAINS_HOUSES = {
+            "village/plains/houses/plains_small_house_1",
+            "village/plains/houses/plains_small_house_2",
+            "village/plains/houses/plains_small_house_3",
+            "village/plains/houses/plains_small_house_4",
+            "village/plains/houses/plains_medium_house_1",
+            "village/plains/houses/plains_big_house_1",
+            "village/plains/houses/plains_butcher_shop_1",
+            "village/plains/houses/plains_library_1",
+    };
+
+    private static final String[] TAIGA_HOUSES = {
+            "village/taiga/houses/taiga_small_house_1",
+            "village/taiga/houses/taiga_small_house_2",
+            "village/taiga/houses/taiga_medium_house_1",
+            "village/taiga/houses/taiga_big_house_1",
+            "village/taiga/houses/taiga_armorer_house_1",
+            "village/taiga/houses/taiga_tool_smith_1",
+    };
+
     private final String name;
     private final BlockPos home;
     private final EntityType<? extends MobEntity> unitType;
-    private final Block wallBlock;
-    private final Block roofBlock;
+    private final String[] houseTemplates;
 
     private int buildings;
     private int buildTimer;
     private int spawnTimer;
 
     public Faction(String name, BlockPos home, EntityType<? extends MobEntity> unitType,
-                   Block wallBlock, Block roofBlock) {
+                   String[] houseTemplates) {
         this.name = name;
         this.home = home;
         this.unitType = unitType;
-        this.wallBlock = wallBlock;
-        this.roofBlock = roofBlock;
+        this.houseTemplates = houseTemplates;
         // Stagger the two factions so they do not act on the same tick.
         this.buildTimer = BUILD_INTERVAL / 2;
         this.spawnTimer = SPAWN_INTERVAL / 2;
@@ -121,9 +139,16 @@ public final class Faction {
             return;
         }
 
-        Structures.buildHouse(world, new BlockPos(x, y, z), 6, wallBlock, roofBlock);
+        String template = houseTemplates[buildings % houseTemplates.length];
+        BlockRotation rotation = BlockRotation.values()[buildings % BlockRotation.values().length];
+        boolean placed = Structures.placeVillageHouse(
+                world, new BlockPos(x, y, z), template, rotation, world.getRandom());
+        if (!placed) {
+            IsoRts.LOG.warn("[{}] template missing: {}", name, template);
+            return;
+        }
         buildings++;
-        IsoRts.LOG.info("[{}] built a house at {} {} {} ({} total)", name, x, y, z, buildings);
+        IsoRts.LOG.info("[{}] built {} at {} {} {} ({} total)", name, template, x, y, z, buildings);
     }
 
     /** Restore counters when a world is re-entered, by counting what is already standing. */
@@ -132,12 +157,10 @@ public final class Faction {
     }
 
     public static Faction castle(BlockPos home) {
-        return new Faction("Castle", home, EntityType.IRON_GOLEM,
-                Blocks.STONE_BRICKS, Blocks.DEEPSLATE_TILES);
+        return new Faction("Castle", home, EntityType.IRON_GOLEM, TAIGA_HOUSES);
     }
 
     public static Faction village(BlockPos home) {
-        return new Faction("Village", home, EntityType.VILLAGER,
-                Blocks.OAK_PLANKS, Blocks.CHERRY_PLANKS);
+        return new Faction("Village", home, EntityType.VILLAGER, PLAINS_HOUSES);
     }
 }

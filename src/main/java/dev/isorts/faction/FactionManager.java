@@ -4,6 +4,7 @@ import dev.isorts.IsoRts;
 import dev.isorts.world.Structures;
 import net.minecraft.block.Blocks;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.BlockRotation;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.ArrayList;
@@ -21,6 +22,8 @@ public final class FactionManager {
     /** Distance either side of the player's spawn to place the two settlements. */
     private static final int SETTLEMENT_OFFSET = 60;
     private static final int CASTLE_HALF_WIDTH = 9;
+    /** How far to hunt around the desired spot for level, low-lying ground. */
+    private static final int SITE_SEARCH_RADIUS = 48;
 
     private final List<Faction> factions = new ArrayList<>();
     private boolean built;
@@ -39,8 +42,10 @@ public final class FactionManager {
             return;
         }
 
-        BlockPos castleSite = surfacePos(world, near.getX() - SETTLEMENT_OFFSET, near.getZ() - SETTLEMENT_OFFSET);
-        BlockPos villageSite = surfacePos(world, near.getX() + SETTLEMENT_OFFSET, near.getZ() + SETTLEMENT_OFFSET);
+        BlockPos castleSite = Structures.findFlatSite(world,
+                near.getX() - SETTLEMENT_OFFSET, near.getZ() - SETTLEMENT_OFFSET, SITE_SEARCH_RADIUS);
+        BlockPos villageSite = Structures.findFlatSite(world,
+                near.getX() + SETTLEMENT_OFFSET, near.getZ() + SETTLEMENT_OFFSET, SITE_SEARCH_RADIUS);
 
         boolean alreadyBuilt = world.getBlockState(castleSite.up(8)).isOf(Blocks.LANTERN);
         if (!alreadyBuilt) {
@@ -48,9 +53,10 @@ public final class FactionManager {
                     castleSite.toShortString(), villageSite.toShortString());
             Structures.buildCastle(world, castleSite, CASTLE_HALF_WIDTH);
             Structures.buildWell(world, villageSite);
-            // Seed the village with a couple of houses so it reads as a village immediately.
-            Structures.buildHouse(world, villageSite.add(6, 0, -3), 6, Blocks.OAK_PLANKS, Blocks.CHERRY_PLANKS);
-            Structures.buildHouse(world, villageSite.add(-11, 0, 2), 6, Blocks.OAK_PLANKS, Blocks.CHERRY_PLANKS);
+            // Seed the village with real vanilla houses so it reads as a village immediately.
+            seedVillageHouse(world, villageSite.add(14, 0, -4), "village/plains/houses/plains_medium_house_1");
+            seedVillageHouse(world, villageSite.add(-14, 0, 5), "village/plains/houses/plains_small_house_1");
+            seedVillageHouse(world, villageSite.add(3, 0, 15), "village/plains/houses/plains_butcher_shop_1");
         } else {
             IsoRts.LOG.info("scenario already present, re-attaching");
         }
@@ -60,8 +66,6 @@ public final class FactionManager {
         if (alreadyBuilt) {
             castle.restoreFrom(countHouses(world, castleSite));
             village.restoreFrom(countHouses(world, villageSite));
-        } else {
-            village.restoreFrom(2);
         }
 
         factions.clear();
@@ -82,6 +86,11 @@ public final class FactionManager {
     public void reset() {
         factions.clear();
         built = false;
+    }
+
+    private static void seedVillageHouse(ServerWorld world, BlockPos at, String template) {
+        BlockPos ground = surfacePos(world, at.getX(), at.getZ());
+        Structures.placeVillageHouse(world, ground, template, BlockRotation.NONE, world.getRandom());
     }
 
     /** Count houses by probing the ring slots a faction builds into. */

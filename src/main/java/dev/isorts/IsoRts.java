@@ -11,9 +11,12 @@ import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.entity.passive.IronGolemEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -70,6 +73,7 @@ public class IsoRts implements ModInitializer {
                     ServerPlayerEntity player = handler.getPlayer();
                     seedUnits(player);
                     if (player != null) {
+                        giveStartingGear(player);
                         FACTIONS.ensureScenario(player.getEntityWorld(), player.getBlockPos());
                     }
                 }));
@@ -106,6 +110,33 @@ public class IsoRts implements ModInitializer {
     public static boolean orderMoveTo(MobEntity unit, BlockPos target) {
         return unit.getNavigation().startMovingTo(
                 target.getX() + 0.5, target.getY(), target.getZ() + 0.5, MOVE_SPEED);
+    }
+
+    /**
+     * Kit the player out on first join.
+     * <p>
+     * ponytail: idempotent by checking for the sword rather than storing a "kitted" flag - one
+     * inventory scan beats persistent state we would have to migrate.
+     */
+    private static void giveStartingGear(ServerPlayerEntity player) {
+        if (player.getInventory().contains(stack -> stack.isOf(Items.IRON_SWORD))) {
+            return;
+        }
+        player.getInventory().insertStack(new ItemStack(Items.IRON_SWORD));
+        player.getInventory().insertStack(new ItemStack(Items.SHIELD));
+        player.getInventory().insertStack(new ItemStack(Items.BOW));
+        player.getInventory().insertStack(new ItemStack(Items.ARROW, 64));
+        player.getInventory().insertStack(new ItemStack(Items.COOKED_BEEF, 16));
+        player.getInventory().insertStack(new ItemStack(Items.TORCH, 32));
+        player.getInventory().insertStack(new ItemStack(Items.IRON_PICKAXE));
+        player.getInventory().insertStack(new ItemStack(Items.IRON_AXE));
+
+        player.equipStack(EquipmentSlot.HEAD, new ItemStack(Items.IRON_HELMET));
+        player.equipStack(EquipmentSlot.CHEST, new ItemStack(Items.IRON_CHESTPLATE));
+        player.equipStack(EquipmentSlot.LEGS, new ItemStack(Items.IRON_LEGGINGS));
+        player.equipStack(EquipmentSlot.FEET, new ItemStack(Items.IRON_BOOTS));
+
+        LOG.info("gave starting gear to {}", player.getName().getString());
     }
 
     /**
