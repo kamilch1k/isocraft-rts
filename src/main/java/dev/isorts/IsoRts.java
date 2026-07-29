@@ -1,8 +1,11 @@
 package dev.isorts;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import dev.isorts.faction.FactionManager;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -20,6 +23,7 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.Heightmap;
+import net.minecraft.world.World;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,6 +33,9 @@ public class IsoRts implements ModInitializer {
 
     public static final String MOD_ID = "isorts";
     public static final Logger LOG = LoggerFactory.getLogger(MOD_ID);
+
+    /** The self-playing simulation: two factions that build and raise units on their own. */
+    public static final FactionManager FACTIONS = new FactionManager();
 
     /**
      * Units are vanilla iron golems.
@@ -59,7 +66,22 @@ public class IsoRts implements ModInitializer {
 
         // AFK seed: a fresh world should already have units in it, so there's something to watch.
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
-                server.execute(() -> seedUnits(handler.getPlayer())));
+                server.execute(() -> {
+                    ServerPlayerEntity player = handler.getPlayer();
+                    seedUnits(player);
+                    if (player != null) {
+                        FACTIONS.ensureScenario(player.getEntityWorld(), player.getBlockPos());
+                    }
+                }));
+
+        // The simulation runs whether or not anyone is looking at it.
+        ServerTickEvents.END_WORLD_TICK.register(world -> {
+            if (FACTIONS.isBuilt() && world.getRegistryKey() == World.OVERWORLD) {
+                FACTIONS.tick(world);
+            }
+        });
+
+        ServerLifecycleEvents.SERVER_STOPPED.register(server -> FACTIONS.reset());
 
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
                 dispatcher.register(CommandManager.literal("rts")

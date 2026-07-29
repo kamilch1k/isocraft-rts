@@ -13,15 +13,35 @@ Everything here is driven from a terminal: no launcher GUI, no world-creation sc
 
 Working:
 
+- **A self-playing simulation**: two factions that raise units and build houses on timers, with
+  no input at all
+- **A scenario**: a castle and a village built procedurally near spawn on first load
 - Three control states cycled with one key
-- A real RTS camera: focus-point panning, wheel zoom, stepped rotation
+- An RTS camera: right-drag/WASD pan, middle-drag look, wheel zoom, free cursor, cursor picking
 - Selectable units with move orders (client picks, server validates and paths)
 - `/rts spawn [n]` and an auto-seeded starting squad on world join
-- Isometric view auto-enabled on join
-- One-command launch: borderless, sized, positioned, on a chosen virtual desktop, straight into a world
+- One-command launch: borderless, sized, positioned, on a chosen virtual desktop, into a world
 - Headless world generation via the vanilla server jar
 
-Not built yet - see [Roadmap](#roadmap).
+Known issues are tracked in [BUGS.md](BUGS.md). Not built yet - see [Roadmap](#roadmap).
+
+## The simulation
+
+On first entry to a world, a castle and a village are built roughly 60 blocks either side of
+spawn. Each is a faction:
+
+| faction | units | builds |
+| --- | --- | --- |
+| Castle | iron golems | stone-brick houses with deepslate roofs |
+| Village | villagers | oak houses with cherry roofs |
+
+Every 20 seconds a faction raises a unit if it is under its cap; every 60 seconds it builds
+another house, spiralling outward from home. The cap rises with the building count, so a
+settlement visibly grows. This runs on the server tick, so it keeps going whether or not you are
+watching - which is the point.
+
+State is held in memory and rebuilt on reload by probing what is standing (a lantern on the
+castle keep is the "already built" marker), rather than defining a save format for two counters.
 
 ## The three control states
 
@@ -128,10 +148,13 @@ Hard-won, all of it non-obvious:
 
 ## Roadmap
 
-- [x] **State 3** - detached RTS camera with pan, zoom and rotation
-- [ ] Cursor unprojection and drag-box selection (replacing the current crosshair pick)
-- [ ] **Self-playing factions** - periodic unit spawning, settlement building, expansion
-- [ ] **Dedicated map** - island archipelago with mountains, forests, cherry groves and villages
+- [x] **State 3** - detached RTS camera with pan, zoom, look and a free cursor
+- [x] Cursor unprojection for picking
+- [x] **Self-playing factions** - unit spawning and settlement building on timers
+- [ ] Drag-box selection over multiple units
+- [ ] Faction conflict: territory, combat, something to compete for
+- [ ] Resources and an economy (deliberately absent until something competes for them)
+- [ ] **Dedicated map** - island archipelago with mountains, forests and cherry groves
 - [ ] Custom unit entity (needs renderer + model + texture + model-layer registration)
 
 ## License
