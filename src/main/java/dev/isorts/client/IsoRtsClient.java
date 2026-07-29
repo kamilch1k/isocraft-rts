@@ -36,7 +36,7 @@ public class IsoRtsClient implements ClientModInitializer {
      * ours. We drive it by synthesising this key's state - it must stay BOUND to something for
      * that to work, which is why it is parked here rather than unbound.
      */
-    private static final String ISO_TOGGLE_KEY = "key.keyboard.f24";
+    private static final String ISO_TOGGLE_KEY = "key.keyboard.f8";
 
     /** Isocraft's rotate keys, driven by middle-drag while in ISO_PLAYER. */
     private static final String ROTATE_CCW_KEY = "key.keyboard.z";
