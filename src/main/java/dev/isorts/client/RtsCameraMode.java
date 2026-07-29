@@ -65,6 +65,12 @@ public final class RtsCameraMode {
     /** Input sets target*; rendered values ease toward them so nothing snaps. */
     private static final double EASE = 0.45;
 
+    /** A single-frame cursor jump larger than this is a grab/release warp, not real motion. */
+    private static final double CURSOR_JUMP = 200.0;
+
+    private static final double[] CURSOR_X = new double[1];
+    private static final double[] CURSOR_Y = new double[1];
+
     private boolean active;
     private ArmorStandEntity camera;
     private Input savedInput;
@@ -215,12 +221,25 @@ public final class RtsCameraMode {
         }
 
         long window = client.getWindow().getHandle();
-        double mx = client.mouse.getX();
-        double my = client.mouse.getY();
+
+        // Read the raw GLFW cursor rather than MinecraftClient#mouse. Minecraft does its own
+        // bookkeeping on that field while the pointer is grabbed - which is exactly when
+        // middle-drag runs - and the vertical component came back as good as zero, so pitch
+        // never moved and only yaw responded.
+        GLFW.glfwGetCursorPos(window, CURSOR_X, CURSOR_Y);
+        double mx = CURSOR_X[0];
+        double my = CURSOR_Y[0];
         double dmx = mx - lastMouseX;
         double dmy = my - lastMouseY;
         lastMouseX = mx;
         lastMouseY = my;
+
+        // A grab or release teleports the cursor; ignore that frame's delta so the camera
+        // does not snap.
+        if (Math.abs(dmx) > CURSOR_JUMP || Math.abs(dmy) > CURSOR_JUMP) {
+            dmx = 0.0;
+            dmy = 0.0;
+        }
 
         handleLook(client, window, dmx, dmy);
         handleMove(client, window, dmx, dmy);
