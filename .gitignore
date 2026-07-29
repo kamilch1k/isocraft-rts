@@ -1,0 +1,16 @@
+# Gradle / Loom
+build/
+.gradle/
+run/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+out/
+
+# never commit game data
+saves/
+worldgen/
+*.mca
