@@ -54,6 +54,10 @@ public class IsoWin {
 $h  = $p.MainWindowHandle
 $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 $m  = 12
+# A window larger than the desktop still gets a full-size framebuffer, which is how 1080p captures
+# come off a 1536x960 screen - but it must be anchored at the origin, or the bottom-right placement
+# below pushes it to negative coordinates and most of the view off-screen.
+$oversize = ($Width -gt $wa.Width) -or ($Height -gt $wa.Height)
 [void][IsoWin]::ShowWindow($h, 9)                                   # SW_RESTORE
 
 if (-not $Bordered) {
@@ -68,10 +72,13 @@ if (-not $Bordered) {
 }
 
 # SWP_FRAMECHANGED (0x0020) makes the style change take effect.
-[void][IsoWin]::SetWindowPos($h, [IntPtr]::Zero,
-    ($wa.X + $wa.Width - $Width - $m), ($wa.Y + $wa.Height - $Height - $m),
+if ($oversize) { $x = 0; $y = 0 } else {
+    $x = $wa.X + $wa.Width - $Width - $m
+    $y = $wa.Y + $wa.Height - $Height - $m
+}
+[void][IsoWin]::SetWindowPos($h, [IntPtr]::Zero, $x, $y,
     $Width, $Height, (0x0014 -bor 0x0020))                          # NOZORDER|NOACTIVATE|FRAMECHANGED
-"placed $($Width)x$($Height) bottom-right"
+"placed $($Width)x$($Height) at $x,$y$(if ($oversize) { ' (oversize: framebuffer > screen)' } else { ' bottom-right' })"
 
 Import-Module "C:\cc\tools\VirtualDesktop\VirtualDesktop.psd1" -WarningAction SilentlyContinue
 if ((Get-DesktopCount) -le $DesktopIndex) {

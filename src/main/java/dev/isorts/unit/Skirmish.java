@@ -29,14 +29,21 @@ import java.util.List;
 public final class Skirmish {
 
     /**
-     * How far from the player each side musters.
+     * Where each side musters, relative to the player.
      * <p>
-     * Was 34, which put the clash just outside the isometric view - the armies met at the edge of
-     * the screen or in whatever hedge was there. At 20 they converge on the player.
+     * Not symmetrical, and that is the point. With both sides equidistant the player - who charges
+     * the nearest enemy - arrived first and fought alone while his own troops were still crossing
+     * the field behind him. Friendlies now form up practically on top of him and the enemy comes
+     * from further out, so the whole line advances together and he is fighting *with* his army.
      */
-    private static final int SPAWN_DISTANCE = 20;
-    /** How far to hunt for a road near the muster point. */
-    private static final int ROAD_SEARCH = 22;
+    private static final int FRIENDLY_DISTANCE = 7;
+    private static final int ENEMY_DISTANCE = 30;
+    /**
+     * How far to hunt for a road near the muster point. Tight for friendlies - snapping them to a
+     * road twenty blocks away would undo the point of forming up next to the player.
+     */
+    private static final int FRIENDLY_ROAD_SEARCH = 8;
+    private static final int ENEMY_ROAD_SEARCH = 22;
 
     /** Ticks between reinforcement checks. */
     private static final int WAVE_INTERVAL = 120;                 // 6s
@@ -76,19 +83,21 @@ public final class Skirmish {
         }
 
         axis += 0.7;                                              // ~40 degrees per wave
-        double dx = Math.cos(axis) * SPAWN_DISTANCE;
-        double dz = Math.sin(axis) * SPAWN_DISTANCE;
+        double ux = Math.cos(axis);
+        double uz = Math.sin(axis);
         BlockPos centre = player.getBlockPos();
         IsoRts.LOG.info("wave: {} friendly / {} hostile in theatre", friends, foes);
 
         if (friends < SIDE_CAP) {
             BlockPos at = Roads.musterPoint(world,
-                    centre.getX() + (int) dx, centre.getZ() + (int) dz, ROAD_SEARCH);
+                    centre.getX() + (int) (ux * FRIENDLY_DISTANCE),
+                    centre.getZ() + (int) (uz * FRIENDLY_DISTANCE), FRIENDLY_ROAD_SEARCH);
             spawnSquad(world, at, Units.KINGDOM, Math.min(SQUAD_SIZE, SIDE_CAP - friends));
         }
         if (foes < SIDE_CAP) {
             BlockPos at = Roads.musterPoint(world,
-                    centre.getX() - (int) dx, centre.getZ() - (int) dz, ROAD_SEARCH);
+                    centre.getX() - (int) (ux * ENEMY_DISTANCE),
+                    centre.getZ() - (int) (uz * ENEMY_DISTANCE), ENEMY_ROAD_SEARCH);
             spawnSquad(world, at, Units.RAIDERS, Math.min(SQUAD_SIZE, SIDE_CAP - foes));
         }
     }
