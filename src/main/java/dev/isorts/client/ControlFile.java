@@ -22,6 +22,9 @@ import java.util.List;
  *   probe                      log cursor, FOV and where each unit projects on screen
  *   selectall                  select every friendly unit nearby
  *   order x y z                order the selection to a block
+ *   watch                      aim the free camera at the thickest of the fighting
+ *   record name frames every   capture numbered PNGs -> tools/makevideo.py
+ *   tp x y z                   move the player (the armies muster around them)
  * </pre>
  * ponytail: a polled file, not a socket or RCON. One writer, one reader, five-tick latency is
  * fine for taking screenshots; a protocol server would be pure ceremony.
@@ -79,6 +82,20 @@ final class ControlFile {
             }
             case "state" -> owner.setState(a[1]);
             case "probe" -> owner.probe();
+            case "watch" -> owner.watchBattle();
+            case "record" -> owner.record(a[1], Integer.parseInt(a[2]), Integer.parseInt(a[3]));
+            case "tp" -> owner.teleport(new BlockPos(
+                    Integer.parseInt(a[1]), Integer.parseInt(a[2]), Integer.parseInt(a[3])));
+            // Anything the /rts command can already do, without inventing a packet for each.
+            case "cmd" -> {
+                if (client.player != null) {
+                    // sendChatCommand wants the command WITHOUT a leading slash; passing one
+                    // produces "//rts clear", which silently does nothing.
+                    String command = line.substring(4).trim();
+                    client.player.networkHandler.sendChatCommand(
+                            command.startsWith("/") ? command.substring(1) : command);
+                }
+            }
             case "selectall" -> owner.selectAllFromTerminal();
             case "order" -> owner.orderTo(new BlockPos(
                     Integer.parseInt(a[1]), Integer.parseInt(a[2]), Integer.parseInt(a[3])));

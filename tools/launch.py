@@ -25,7 +25,10 @@ def main() -> int:
     # ponytail: a flag, not --world "", because PowerShell drops empty string args
     ap.add_argument("--menu", action="store_true", help="boot to the main menu instead of a world")
     ap.add_argument("--size", default="854x480", help="window size, WxH")
-    ap.add_argument("--user", default="IsoCraft")
+    # Offline mode picks one of Minecraft's 18 default skins by hashing the account UUID, which is
+    # itself derived from this name - so the name IS the skin. "Falkner" lands on wide/kai, a
+    # deliberate choice: the default for the old name was a Steve-alike.
+    ap.add_argument("--user", default="Falkner")
     args = ap.parse_args()
 
     work_dir = Path(args.dir)

@@ -3,8 +3,12 @@ package dev.isorts.client;
 import dev.isorts.AttackOrderPayload;
 import dev.isorts.IsoRts;
 import dev.isorts.MoveOrderPayload;
+import dev.isorts.TeleportPayload;
+import dev.isorts.client.render.SoldierRenderer;
+import dev.isorts.unit.IsoUnits;
 import dev.isorts.unit.Units;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -59,12 +63,15 @@ public class IsoRtsClient implements ClientModInitializer {
     private static final double BOX_MIN_PIXELS = 8.0;
     /** How far around the player to look for units when selecting. */
     private static final double SELECT_RADIUS = 128.0;
+    /** What counts as "the same fight" when looking for where the action is. */
+    private static final double CLUSTER_RADIUS = 14.0;
 
     private View view = View.ISOMETRIC;
     private final List<MobEntity> selected = new ArrayList<>();
 
     private final RtsCameraMode freeCamera = new RtsCameraMode();
     private final ControlFile controlFile = new ControlFile(this);
+    private final Recorder recorder = new Recorder();
 
     private KeyBinding cycleKey;
     private KeyBinding freeCamKey;
@@ -80,9 +87,15 @@ public class IsoRtsClient implements ClientModInitializer {
     private double dragStartX;
     private double dragStartY;
     private boolean loggedCursorSource;
+    /** A camera pose queued by the control file, applied once the camera is running. */
+    private double[] pendingPose;
 
     @Override
     public void onInitializeClient() {
+        // Without a registered renderer a custom entity does not merely fail to draw - Iris's
+        // shadow pass asks for the renderer, gets null, and crashes the game.
+        EntityRendererRegistry.register(IsoUnits.SOLDIER, SoldierRenderer::new);
+
         // 1.21.11: KeyBinding takes a KeyBinding.Category record, not a translation-key String.
         KeyBinding.Category category = KeyBinding.Category.create(Identifier.of(IsoRts.MOD_ID, "isorts"));
         cycleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
@@ -117,6 +130,7 @@ public class IsoRtsClient implements ClientModInitializer {
 
     private void onTick(MinecraftClient client) {
         controlFile.tick(client);
+        recorder.tick(client);
         if (client.player == null || client.world == null) {
             return;
         }
@@ -152,9 +166,18 @@ public class IsoRtsClient implements ClientModInitializer {
             IsocraftBridge.setIso(wantIso);
         }
 
+        if (pendingPose != null && freeCamera.isActive()) {
+            freeCamera.setPose(pendingPose[0], pendingPose[1], pendingPose[2],
+                    (float) pendingPose[3], (float) pendingPose[4]);
+            pendingPose = null;
+        }
+
         freeCamera.tick(client);
-        if (!freeCamera.isActive() && view == View.ISOMETRIC) {
-            handleMiddleDragRotate(client);
+        if (!freeCamera.isActive()) {
+            AutoAttack.tick(client);                 // hold attack, fight what is next to you
+            if (view == View.ISOMETRIC) {
+                handleMiddleDragRotate(client);
+            }
         }
         pruneSelection();
         handleCommands(client);
@@ -478,6 +501,61 @@ public class IsoRtsClient implements ClientModInitializer {
             }
         }
         IsoRts.LOG.info("[probe] {} selected", selected.size());
+    }
+
+    /**
+     * Point the free camera at wherever the fighting is.
+     * <p>
+     * A battle moves, so a camera posed at fixed coordinates is looking at an empty field by the
+     * time the screenshot lands. This aims at the centre of mass of the units instead.
+     */
+    void watchBattle() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        List<MobEntity> units = nearbyUnits(client);
+        if (units.isEmpty()) {
+            IsoRts.LOG.info("[ctl] watch: no units nearby");
+            return;
+        }
+
+        // The densest knot of units, not their average position: two armies spread across a map
+        // average out to an empty field between them, which is exactly what earlier shots framed.
+        MobEntity busiest = null;
+        int most = -1;
+        for (MobEntity unit : units) {
+            int neighbours = 0;
+            for (MobEntity other : units) {
+                if (unit.squaredDistanceTo(other) < CLUSTER_RADIUS * CLUSTER_RADIUS) {
+                    neighbours++;
+                }
+            }
+            if (neighbours > most) {
+                most = neighbours;
+                busiest = unit;
+            }
+        }
+
+        double x = busiest.getEntityPos().x;
+        double y = busiest.getEntityPos().y;
+        double z = busiest.getEntityPos().z;
+        IsoRts.LOG.info("[ctl] watch: densest knot has {} unit(s)", most);
+
+        if (!freeCamera.isActive()) {
+            freeCamera.enable(client);
+        }
+        // Applied on the NEXT tick, not here: enabling the camera seeds its target from the player,
+        // and a pose set in the same call was being overwritten by that - the camera ended up
+        // hanging over the player instead of the battle.
+        pendingPose = new double[] { x, y + 22.0, z + 26.0, 180.0, 45.0 };
+        IsoRts.LOG.info("[ctl] watch: {} unit(s), centre {} {} {}",
+                units.size(), (int) x, (int) y, (int) z);
+    }
+
+    void record(String name, int frames, int everyNTicks) {
+        recorder.start(name, frames, everyNTicks);
+    }
+
+    void teleport(BlockPos target) {
+        ClientPlayNetworking.send(new TeleportPayload(target));
     }
 
     /** Terminal test hook: select and order without a mouse. */

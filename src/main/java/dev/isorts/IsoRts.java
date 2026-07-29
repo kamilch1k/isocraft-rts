@@ -3,6 +3,8 @@ package dev.isorts;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import dev.isorts.faction.Faction;
 import dev.isorts.faction.FactionManager;
+import dev.isorts.unit.IsoUnits;
+import dev.isorts.unit.Skirmish;
 import dev.isorts.unit.UnitAI;
 import dev.isorts.unit.Units;
 import net.fabricmc.api.ModInitializer;
@@ -23,9 +25,13 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
+import net.minecraft.util.TypeFilter;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
+
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,8 +49,10 @@ public class IsoRts implements ModInitializer {
 
     @Override
     public void onInitialize() {
+        IsoUnits.register();
         PayloadTypeRegistry.playC2S().register(MoveOrderPayload.ID, MoveOrderPayload.CODEC);
         PayloadTypeRegistry.playC2S().register(AttackOrderPayload.ID, AttackOrderPayload.CODEC);
+        PayloadTypeRegistry.playC2S().register(TeleportPayload.ID, TeleportPayload.CODEC);
 
         ServerPlayNetworking.registerGlobalReceiver(MoveOrderPayload.ID, (payload, context) -> {
             ServerPlayerEntity player = context.player();
@@ -53,6 +61,18 @@ public class IsoRts implements ModInitializer {
         ServerPlayNetworking.registerGlobalReceiver(AttackOrderPayload.ID, (payload, context) -> {
             ServerPlayerEntity player = context.player();
             context.server().execute(() -> handleAttackOrder(player, payload));
+        });
+        ServerPlayNetworking.registerGlobalReceiver(TeleportPayload.ID, (payload, context) -> {
+            ServerPlayerEntity player = context.player();
+            context.server().execute(() -> {
+                BlockPos to = payload.target();
+                ServerWorld world = player.getEntityWorld();
+                int y = Math.max(to.getY(), world.getTopY(
+                        Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, to.getX(), to.getZ()));
+                player.teleport(world, to.getX() + 0.5, y, to.getZ() + 0.5,
+                        Set.of(), player.getYaw(), player.getPitch(), false);
+                LOG.info("[ctl] teleported player to {} {} {}", to.getX(), y, to.getZ());
+            });
         });
 
         // Order matters: the scenario decides whether this world may be terraformed at all, and on
@@ -70,12 +90,14 @@ public class IsoRts implements ModInitializer {
         ServerTickEvents.END_WORLD_TICK.register(world -> {
             if (FACTIONS.isBuilt() && world.getRegistryKey() == World.OVERWORLD) {
                 FACTIONS.tick(world);
+                Skirmish.tick(world);
                 UnitAI.tick(world);
             }
         });
 
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> {
             FACTIONS.reset();
+            Skirmish.reset();
             UnitAI.reset();
         });
 
@@ -90,7 +112,9 @@ public class IsoRts implements ModInitializer {
                                         .executes(ctx -> wave(ctx.getSource(),
                                                 IntegerArgumentType.getInteger(ctx, "count")))))
                         .then(CommandManager.literal("status")
-                                .executes(ctx -> status(ctx.getSource())))));
+                                .executes(ctx -> status(ctx.getSource())))
+                        .then(CommandManager.literal("clear")
+                                .executes(ctx -> clearUnits(ctx.getSource())))));
 
         LOG.info("Isocraft RTS ready");
     }
@@ -115,24 +139,29 @@ public class IsoRts implements ModInitializer {
      * inventory scan beats persistent state we would have to migrate.
      */
     private static void giveStartingGear(ServerPlayerEntity player) {
-        if (player.getInventory().contains(stack -> stack.isOf(Items.IRON_SWORD))) {
+        // Keyed on the armour, not the sword: the kit changed after players already had the old
+        // one, and a guard on the sword meant the new armour was never handed out.
+        if (player.getEquippedStack(EquipmentSlot.CHEST).isOf(Items.CHAINMAIL_CHESTPLATE)) {
             return;
         }
-        player.getInventory().insertStack(new ItemStack(Items.IRON_SWORD));
-        player.getInventory().insertStack(new ItemStack(Items.SHIELD));
-        player.getInventory().insertStack(new ItemStack(Items.BOW));
-        player.getInventory().insertStack(new ItemStack(Items.ARROW, 64));
-        player.getInventory().insertStack(new ItemStack(Items.COOKED_BEEF, 16));
-        player.getInventory().insertStack(new ItemStack(Items.TORCH, 32));
-        player.getInventory().insertStack(new ItemStack(Items.IRON_PICKAXE));
-        player.getInventory().insertStack(new ItemStack(Items.IRON_AXE));
+        // Placed in named slots rather than inserted: on a map that hands the player a full
+        // creative inventory, "insert somewhere" buries the sword in the backpack, and auto-attack
+        // then swings a fistful of building blocks.
+        player.getInventory().setStack(0, new ItemStack(Items.DIAMOND_SWORD));
+        player.getInventory().setStack(1, new ItemStack(Items.BOW));
+        player.getInventory().setStack(2, new ItemStack(Items.ARROW, 64));
+        player.getInventory().setStack(3, new ItemStack(Items.COOKED_BEEF, 32));
+        player.getInventory().setStack(4, new ItemStack(Items.GOLDEN_APPLE, 8));
+        player.getInventory().setSelectedSlot(0);
 
+        player.equipStack(EquipmentSlot.OFFHAND, new ItemStack(Items.SHIELD));
         player.equipStack(EquipmentSlot.HEAD, new ItemStack(Items.IRON_HELMET));
-        player.equipStack(EquipmentSlot.CHEST, new ItemStack(Items.IRON_CHESTPLATE));
-        player.equipStack(EquipmentSlot.LEGS, new ItemStack(Items.IRON_LEGGINGS));
-        player.equipStack(EquipmentSlot.FEET, new ItemStack(Items.IRON_BOOTS));
+        player.equipStack(EquipmentSlot.CHEST, new ItemStack(Items.CHAINMAIL_CHESTPLATE));
+        player.equipStack(EquipmentSlot.LEGS, new ItemStack(Items.CHAINMAIL_LEGGINGS));
+        player.equipStack(EquipmentSlot.FEET, new ItemStack(Items.CHAINMAIL_BOOTS));
 
-        LOG.info("gave starting gear to {}", player.getName().getString());
+        LOG.info("gave battle gear to {} (sword in hand, shield in offhand)",
+                player.getName().getString());
     }
 
     /** Validate on the server - never trust a client-supplied target. */
@@ -183,6 +212,27 @@ public class IsoRts implements ModInitializer {
         final int n = spawned;
         source.sendFeedback(() -> Text.literal("raised " + n + " unit(s)"), false);
         return spawned;
+    }
+
+    /**
+     * Remove every unit in the world, so the next wave musters fresh around the player.
+     * <p>
+     * Units are persistent by design, which means a battle left behind in a forest keeps pulling
+     * reinforcements to it. This is how a fight gets staged somewhere specific.
+     */
+    private static int clearUnits(ServerCommandSource source) {
+        ServerWorld world = source.getWorld();
+        int removed = 0;
+        for (MobEntity unit : world.getEntitiesByType(
+                TypeFilter.instanceOf(MobEntity.class), Units::isUnit)) {
+            unit.discard();
+            removed++;
+        }
+        UnitAI.reset();
+        final int n = removed;
+        source.sendFeedback(() -> Text.literal("cleared " + n + " unit(s)"), false);
+        LOG.info("[ctl] cleared {} unit(s)", n);
+        return removed;
     }
 
     private static int status(ServerCommandSource source) {

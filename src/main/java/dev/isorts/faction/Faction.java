@@ -111,11 +111,12 @@ public final class Faction {
         return this;
     }
 
+    /**
+     * Factions only build now. Raising units moved to {@link dev.isorts.unit.Skirmish}, which
+     * spawns both sides around the player so the fight is where the player is looking - camps at
+     * fixed map coordinates put half the battle out of sight and out of the client's tracking range.
+     */
     public void tick(ServerWorld world) {
-        if (--spawnTimer <= 0) {
-            spawnTimer = SPAWN_INTERVAL;
-            trySpawnUnit(world);
-        }
         if (mayBuild && --buildTimer <= 0) {
             buildTimer = BUILD_INTERVAL;
             tryBuild(world);

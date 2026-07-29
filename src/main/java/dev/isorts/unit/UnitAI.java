@@ -3,8 +3,10 @@ package dev.isorts.unit;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.TypeFilter;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.Heightmap;
 
@@ -94,7 +96,39 @@ public final class UnitAI {
         }
     }
 
+    /**
+     * Push aside leaves a unit is jammed in.
+     * <p>
+     * Minecraft's pathfinder treats leaves as solid and will not route through them, so a squad
+     * that walks into a hedge or under a low canopy simply stops and stands there for the rest of
+     * the battle. Rather than replace the navigator, the leaves in the unit's own two blocks of
+     * space are cleared - they are brushing through the foliage. Only leaves: logs, walls and
+     * anything else built stay exactly where they are.
+     */
+    private static void clearLeaves(ServerWorld world, MobEntity unit) {
+        BlockPos at = unit.getBlockPos();
+        for (int dy = 0; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    BlockPos p = at.add(dx, dy, dz);
+                    if (world.getBlockState(p).isIn(BlockTags.LEAVES)) {
+                        world.breakBlock(p, false);
+                    }
+                }
+            }
+        }
+    }
+
+    /** True if this unit is wedged: told to go somewhere, but its navigation has given up. */
+    private static boolean isStuck(MobEntity unit) {
+        return unit.getNavigation().isIdle() && unit.getTarget() != null;
+    }
+
     private static void think(ServerWorld world, MobEntity unit) {
+        if (isStuck(unit)) {
+            clearLeaves(world, unit);
+        }
+
         LivingEntity current = unit.getTarget();
         if (current != null && current.isAlive() && Units.areEnemies(unit, current)
                 && unit.squaredDistanceTo(current) < ENGAGE_RANGE * ENGAGE_RANGE * 4.0) {
@@ -119,7 +153,11 @@ public final class UnitAI {
         int x = (int) Math.floor(waypoint.x);
         int z = (int) Math.floor(waypoint.z);
         int y = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, x, z);
-        unit.getNavigation().startMovingTo(x + 0.5, y, z + 0.5, MARCH_SPEED);
+        boolean moving = unit.getNavigation().startMovingTo(x + 0.5, y, z + 0.5, MARCH_SPEED);
+        if (!moving) {
+            // No route to the next waypoint: usually foliage in the way on a wooded map.
+            clearLeaves(world, unit);
+        }
         unit.setTarget(null);
     }
 

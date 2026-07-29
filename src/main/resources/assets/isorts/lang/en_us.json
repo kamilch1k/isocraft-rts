@@ -1,4 +1,8 @@
 {
   "key.categories.isorts": "Isocraft RTS",
-  "key.isorts.cycle_view": "Cycle view (first person / isometric / RTS camera)"
+  "key.isorts.cycle_view": "Toggle view (isometric / first person)",
+  "key.isorts.free_camera": "Free RTS camera",
+  "key.isorts.select_all": "Select all friendly units",
+  "key.isorts.clear_selection": "Clear selection",
+  "entity.isorts.soldier": "Soldier"
 }
