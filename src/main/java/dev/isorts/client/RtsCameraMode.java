@@ -46,11 +46,23 @@ public final class RtsCameraMode {
     private ArmorStandEntity camera;
     private Input savedInput;
 
+    /**
+     * Input drives the {@code target*} values; the rendered values ease toward them each tick.
+     * Without this the camera snaps, which is what makes a tick-rate camera feel cheap.
+     */
+    private static final double EASE = 0.35;
+
     private double focusX;
     private double focusY;
     private double focusZ;
     private double distance = DEFAULT_DISTANCE;
     private float yaw = 45.0f;
+
+    private double targetFocusX;
+    private double targetFocusY;
+    private double targetFocusZ;
+    private double targetDistance = DEFAULT_DISTANCE;
+    private float targetYaw = 45.0f;
 
     private int rotateCooldown;
     private boolean middleWasDown;
@@ -73,7 +85,8 @@ public final class RtsCameraMode {
             long window = client.getWindow().getHandle();
             previousScrollCallback = GLFW.glfwSetScrollCallback(window, (win, dx, dy) -> {
                 if (active) {
-                    distance = MathHelper.clamp(distance - dy * ZOOM_STEP, MIN_DISTANCE, MAX_DISTANCE);
+                    targetDistance = MathHelper.clamp(
+                            targetDistance - dy * ZOOM_STEP, MIN_DISTANCE, MAX_DISTANCE);
                     return;                                  // swallow: don't scroll the hotbar
                 }
                 if (previousScrollCallback != null) {
@@ -92,10 +105,11 @@ public final class RtsCameraMode {
         }
         try {
             Vec3d p = client.player.getEntityPos();
-            focusX = p.x;
-            focusZ = p.z;
-            focusY = groundAt(client, focusX, focusZ);
-            distance = DEFAULT_DISTANCE;
+            targetFocusX = focusX = p.x;
+            targetFocusZ = focusZ = p.z;
+            targetFocusY = focusY = groundAt(client, focusX, focusZ);
+            targetDistance = distance = DEFAULT_DISTANCE;
+            targetYaw = yaw;
 
             camera = new ArmorStandEntity(EntityType.ARMOR_STAND, client.world);
             camera.setInvisible(true);
@@ -148,6 +162,14 @@ public final class RtsCameraMode {
 
         handleRotate(client);
         handlePan(client);
+
+        // Ease the rendered values toward the input targets.
+        focusX = MathHelper.lerp(EASE, focusX, targetFocusX);
+        focusY = MathHelper.lerp(EASE, focusY, targetFocusY);
+        focusZ = MathHelper.lerp(EASE, focusZ, targetFocusZ);
+        distance = MathHelper.lerp(EASE, distance, targetDistance);
+        yaw += (float) (MathHelper.wrapDegrees(targetYaw - yaw) * EASE);
+
         applyCameraTransform();
     }
 
@@ -160,7 +182,7 @@ public final class RtsCameraMode {
         boolean ccw = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_Z) == GLFW.GLFW_PRESS;
         boolean cw = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_C) == GLFW.GLFW_PRESS;
         if (ccw ^ cw) {
-            yaw = MathHelper.wrapDegrees(yaw + (cw ? YAW_STEP : -YAW_STEP));
+            targetYaw = MathHelper.wrapDegrees(targetYaw + (cw ? YAW_STEP : -YAW_STEP));
             rotateCooldown = ROTATE_COOLDOWN_TICKS;
         }
     }
@@ -183,8 +205,8 @@ public final class RtsCameraMode {
 
         double len = Math.sqrt(dx * dx + dz * dz);
         if (len > 1.0e-4) {
-            focusX += dx / len * speed;
-            focusZ += dz / len * speed;
+            targetFocusX += dx / len * speed;
+            targetFocusZ += dz / len * speed;
         }
 
         // Middle-drag pans, matching how most RTS games grab the map.
@@ -196,8 +218,8 @@ public final class RtsCameraMode {
             if (middleWasDown) {
                 double ddx = (mx - lastMouseX) * DRAG_PAN_SCALE * (distance / DEFAULT_DISTANCE);
                 double ddy = (my - lastMouseY) * DRAG_PAN_SCALE * (distance / DEFAULT_DISTANCE);
-                focusX += -fx * ddy - fz * ddx;
-                focusZ += -fz * ddy + fx * ddx;
+                targetFocusX += -fx * ddy - fz * ddx;
+                targetFocusZ += -fz * ddy + fx * ddx;
             }
             middleWasDown = true;
         } else {
@@ -206,7 +228,9 @@ public final class RtsCameraMode {
         lastMouseX = mx;
         lastMouseY = my;
 
-        focusY = groundAt(client, focusX, focusZ);
+        // Target the terrain height under the focus; the ease in tick() keeps it from popping
+        // as you pan across cliffs.
+        targetFocusY = groundAt(client, targetFocusX, targetFocusZ);
     }
 
     /** Place the camera on a fixed isometric orbit around the focus point. */
@@ -224,13 +248,14 @@ public final class RtsCameraMode {
         double cz = focusZ - MathHelper.cos(yawRad) * horizontal;
         double cy = focusY + vertical;
 
+        // Record where the camera WAS, then move it. Minecraft renders the camera interpolated
+        // between last* and current using the frame's tick delta, so overwriting last* with the
+        // new position (as this did originally) destroys interpolation and the camera moves in 20
+        // visible steps per second no matter the framerate.
+        camera.setLastPositionAndAngles(camera.getEntityPos(), camera.getYaw(), camera.getPitch());
         camera.setPosition(cx, cy, cz);
         camera.setYaw(yaw);
         camera.setPitch(ISO_PITCH);
-        camera.updateLastAngles();
-        camera.lastX = cx;
-        camera.lastY = cy;
-        camera.lastZ = cz;
     }
 
     private static double groundAt(MinecraftClient client, double x, double z) {
