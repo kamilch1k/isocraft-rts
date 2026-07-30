@@ -122,6 +122,19 @@ public class IsoRts implements ModInitializer {
                                 .executes(ctx -> status(ctx.getSource())))
                         .then(CommandManager.literal("clear")
                                 .executes(ctx -> clearUnits(ctx.getSource())))
+                        .then(CommandManager.literal("pause")
+                                .executes(ctx -> {
+                                    boolean paused = Skirmish.togglePause();
+                                    if (paused) {
+                                        clearUnits(ctx.getSource());
+                                    }
+                                    String state = paused
+                                            ? "reinforcements paused, field cleared"
+                                            : "reinforcements resumed";
+                                    ctx.getSource().sendFeedback(() -> Text.literal(state), false);
+                                    LOG.info("[ctl] {}", state);
+                                    return 1;
+                                }))
                         .then(CommandManager.literal("scout")
                                 .executes(ctx -> {
                                     ServerCommandSource s = ctx.getSource();

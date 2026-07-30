@@ -37,7 +37,8 @@ public final class Skirmish {
      * from further out, so the whole line advances together and he is fighting *with* his army.
      */
     private static final int FRIENDLY_DISTANCE = 7;
-    private static final int ENEMY_DISTANCE = 30;
+    /** 22, not 30: the two lines have to meet near the player, not a screen away from him. */
+    private static final int ENEMY_DISTANCE = 22;
     /**
      * How far to hunt for a road near the muster point. Tight for friendlies - snapping them to a
      * road twenty blocks away would undo the point of forming up next to the player.
@@ -59,11 +60,34 @@ public final class Skirmish {
     private static int countdown = WAVE_INTERVAL;
     /** Rotates so successive waves come from different directions instead of one corridor. */
     private static double axis;
+    /**
+     * Stops reinforcements entirely.
+     * <p>
+     * Needed to walk the player anywhere on purpose: with waves arriving every six seconds and
+     * auto-engage steering him at the nearest raider, choosing a spot by hand is a fight against
+     * the game. Paused plus a clear leaves no enemies, so auto-engage has nothing to chase and the
+     * keyboard is fully in charge again.
+     */
+    private static boolean paused;
 
     private Skirmish() {
     }
 
+    public static boolean isPaused() {
+        return paused;
+    }
+
+    /** @return the new paused state */
+    public static boolean togglePause() {
+        paused = !paused;
+        countdown = WAVE_INTERVAL;
+        return paused;
+    }
+
     public static void tick(ServerWorld world) {
+        if (paused) {
+            return;
+        }
         if (--countdown > 0) {
             return;
         }
@@ -160,5 +184,6 @@ public final class Skirmish {
     public static void reset() {
         countdown = WAVE_INTERVAL;
         axis = 0.0;
+        paused = false;
     }
 }

@@ -33,8 +33,15 @@ final class AutoAttack {
 
     /** Vanilla melee reach is 3; a little more makes an isometric brawl less fussy. */
     private static final double REACH = 3.6;
-    /** Turn to face - and walk at - enemies from further out than we can hit them. */
-    private static final double ENGAGE_RANGE = 24.0;
+    /**
+     * How far away an enemy can be and still be worth walking at.
+     * <p>
+     * Was 24, and the player spent whole clips standing alone: his own two dozen troops screen him,
+     * so the fighting happens past that radius and drifts further as the line moves. Because the
+     * isometric camera is locked to the player, "the player is in the melee" and "the melee is in
+     * frame" are the same statement - so he is given a long leash and goes to find the fight.
+     */
+    private static final double ENGAGE_RANGE = 48.0;
 
     /**
      * The player may look a little down, never up.
@@ -63,17 +70,21 @@ final class AutoAttack {
         if (enemy == null) {
             player.setPitch(MathHelper.clamp(player.getPitch(), MIN_PITCH, MAX_PITCH));
             if (input != null) {
-                input.advancing = false;
+                input.target = null;
             }
             return;
         }
 
-        face(player, enemy);
         double distSq = player.squaredDistanceTo(enemy);
 
-        // Close the distance, then stop and fight rather than shoving through them.
+        // Close the distance, then stop and fight rather than shoving through them. The target is
+        // handed to the input wrapper rather than acted on here, so that facing and moving happen
+        // in the same breath - see EngageInput.
         if (input != null) {
-            input.advancing = distSq > REACH * REACH && client.currentScreen == null;
+            input.target = distSq > REACH * REACH && client.currentScreen == null ? enemy : null;
+        }
+        if (input == null || input.target == null) {
+            face(player, enemy);            // standing and fighting: still look at them
         }
 
         if (distSq > REACH * REACH || client.currentScreen != null) {
@@ -98,7 +109,15 @@ final class AutoAttack {
         IsoRts.LOG.info("auto-engage input installed");
     }
 
-    /** Point the whole character at the target - head and body, not just the camera. */
+    /**
+     * Point the whole character at the target - head and body, not just the camera.
+     * <p>
+     * Called from inside the input tick rather than from the client tick, and that placement is the
+     * fix for the player charging AWAY from the enemy. "Forward" is defined by the player's yaw, and
+     * Isocraft aims the character at the mouse cursor - so whichever of us wrote the yaw last
+     * decided which way forward was. Setting it here, in the same call that produces the movement
+     * vector Minecraft is about to apply, means it cannot be overwritten in between.
+     */
     private static void face(ClientPlayerEntity player, LivingEntity target) {
         double dx = target.getX() - player.getX();
         double dz = target.getZ() - player.getZ();
@@ -143,7 +162,8 @@ final class AutoAttack {
     private static final class EngageInput extends Input {
 
         private final Input delegate;
-        boolean advancing;
+        /** Who to walk at, or null to leave movement entirely to the keyboard. */
+        LivingEntity target;
 
         private EngageInput(Input delegate) {
             this.delegate = delegate;
@@ -155,8 +175,16 @@ final class AutoAttack {
             playerInput = delegate.playerInput;
             movementVector = delegate.getMovementInput();
 
-            if (!advancing) {
+            if (target == null || !target.isAlive()) {
                 return;
+            }
+            // Aim the character HERE, immediately before Minecraft turns this movement vector into
+            // motion. Doing it a few lines earlier - in the client tick - let Isocraft's
+            // cursor-facing overwrite the yaw first, and then "forward" meant wherever the mouse
+            // happened to point, which is why the player kept charging out of the battle.
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player != null) {
+                face(client.player, target);
             }
             playerInput = new PlayerInput(true, playerInput.backward(), playerInput.left(),
                     playerInput.right(), playerInput.jump(), playerInput.sneak(), playerInput.sprint());
