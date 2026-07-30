@@ -7,6 +7,7 @@ import dev.isorts.unit.IsoUnits;
 import dev.isorts.unit.Skirmish;
 import dev.isorts.unit.UnitAI;
 import dev.isorts.unit.Units;
+import dev.isorts.world.Scout;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -67,8 +68,14 @@ public class IsoRts implements ModInitializer {
             context.server().execute(() -> {
                 BlockPos to = payload.target();
                 ServerWorld world = player.getEntityWorld();
-                int y = Math.max(to.getY(), world.getTopY(
-                        Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, to.getX(), to.getZ()));
+                // Honour the requested Y. Raising it to the column's surface height was actively
+                // wrong: under a building the surface IS the roof, so a teleport to open ground
+                // beside a hall landed inside the hall - which is what put a wall across two
+                // thirds of every shot. Only fall back to the surface if the target is solid.
+                int y = to.getY();
+                if (!world.getBlockState(to).isAir() || !world.getBlockState(to.up()).isAir()) {
+                    y = world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, to.getX(), to.getZ());
+                }
                 player.teleport(world, to.getX() + 0.5, y, to.getZ() + 0.5,
                         Set.of(), player.getYaw(), player.getPitch(), false);
                 LOG.info("[ctl] teleported player to {} {} {}", to.getX(), y, to.getZ());
@@ -114,7 +121,13 @@ public class IsoRts implements ModInitializer {
                         .then(CommandManager.literal("status")
                                 .executes(ctx -> status(ctx.getSource())))
                         .then(CommandManager.literal("clear")
-                                .executes(ctx -> clearUnits(ctx.getSource())))));
+                                .executes(ctx -> clearUnits(ctx.getSource())))
+                        .then(CommandManager.literal("scout")
+                                .executes(ctx -> {
+                                    ServerCommandSource s = ctx.getSource();
+                                    Scout.log(s.getWorld(), BlockPos.ofFloored(s.getPosition()), 8);
+                                    return 1;
+                                }))));
 
         LOG.info("Isocraft RTS ready");
     }
@@ -139,11 +152,10 @@ public class IsoRts implements ModInitializer {
      * inventory scan beats persistent state we would have to migrate.
      */
     private static void giveStartingGear(ServerPlayerEntity player) {
-        // Keyed on the armour, not the sword: the kit changed after players already had the old
-        // one, and a guard on the sword meant the new armour was never handed out.
-        if (player.getEquippedStack(EquipmentSlot.CHEST).isOf(Items.CHAINMAIL_CHESTPLATE)) {
-            return;
-        }
+        // ponytail: no "already kitted" guard at all. Every version of that check has gone stale
+        // the moment the kit changed - guarding on the sword meant new armour was never issued, then
+        // guarding on the chestplate meant the new helmet was never issued. setStack and equipStack
+        // are idempotent, so just hand out the kit on every join and delete the bug class.
         // Placed in named slots rather than inserted: on a map that hands the player a full
         // creative inventory, "insert somewhere" buries the sword in the backpack, and auto-attack
         // then swings a fistful of building blocks.
